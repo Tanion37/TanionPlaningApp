@@ -1,0 +1,14 @@
+config.json
+__pycache__/
+*.pyc
+.env
+*.log
+.venv/
+venv/
+data/
+dist/
+build/
+assets/app_icon.png
+assets/app_icon.ico
+.cursor/projects/
+_sync_public.py
