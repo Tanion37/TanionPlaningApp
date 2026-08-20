@@ -13,7 +13,7 @@ from .tags import tags_to_cell
 
 TZ = timezone(timedelta(hours=3))
 
-Action = str
+Action = str  # created | moved | changed | completed | cancelled
 
 
 def _root() -> Path:
@@ -69,6 +69,7 @@ def snapshot_dict(task: Task) -> dict[str, Any]:
         "project": task.project,
         "description": task.description,
         "author": task.author,
+        "executor": getattr(task, "executor", "") or "",
         "tags": list(task.tags),
         "created_at": _date_iso(task.created_at),
         "start_at": _date_iso(task.start_at),
@@ -76,6 +77,7 @@ def snapshot_dict(task: Task) -> dict[str, Any]:
         "remind_at": _date_iso(task.remind_at),
         "remind_time": task.remind_time or "",
         "remind_period": task.remind_period or "",
+        "series_id": getattr(task, "series_id", "") or "",
         "completed_at": _date_iso(task.completed_at),
         "pos_x": task.pos_x,
         "pos_y": task.pos_y,
@@ -97,7 +99,9 @@ def task_from_state(snap: dict[str, Any]) -> Task:
         remind_at=parse_date(snap.get("remind_at")),
         remind_time=str(snap.get("remind_time") or "").strip(),
         remind_period=str(snap.get("remind_period") or ""),
+        series_id=str(snap.get("series_id") or ""),
         author=str(snap.get("author") or ""),
+        executor=str(snap.get("executor") or "").strip(),
         project=str(snap.get("project") or ""),
         description=str(snap.get("description") or ""),
         tags=list(snap.get("tags") or []),
@@ -114,6 +118,7 @@ def apply_state_to_task(task: Task, snap: dict[str, Any]) -> None:
     task.project = str(snap.get("project") or "")
     task.description = str(snap.get("description") or "")
     task.author = str(snap.get("author") or "")
+    task.executor = str(snap.get("executor") or "").strip()
     task.tags = list(snap.get("tags") or [])
     task.created_at = parse_date(snap.get("created_at"))
     task.start_at = parse_date(snap.get("start_at"))
@@ -121,6 +126,8 @@ def apply_state_to_task(task: Task, snap: dict[str, Any]) -> None:
     task.remind_at = parse_date(snap.get("remind_at"))
     task.remind_time = str(snap.get("remind_time") or "").strip()
     task.remind_period = str(snap.get("remind_period") or "")
+    if "series_id" in snap:
+        task.series_id = str(snap.get("series_id") or "")
     task.completed_at = parse_date(snap.get("completed_at"))
     if "pos_x" in snap:
         task.pos_x = snap.get("pos_x")
@@ -140,6 +147,7 @@ class LogEntry:
     before_state: dict[str, Any] | None = None
     after_state: dict[str, Any] | None = None
     undoes_ts: str | None = None
+    batch: str | None = None
 
     @property
     def ts_key(self) -> str:
@@ -161,6 +169,8 @@ class LogEntry:
             data["after_state"] = self.after_state
         if self.undoes_ts:
             data["undoes_ts"] = self.undoes_ts
+        if self.batch:
+            data["batch"] = self.batch
         return data
 
     @classmethod
@@ -189,6 +199,7 @@ class LogEntry:
             before_state=before_state,
             after_state=after_state,
             undoes_ts=(str(raw["undoes_ts"]) if raw.get("undoes_ts") else None),
+            batch=(str(raw["batch"]) if raw.get("batch") else None),
         )
 
 
@@ -205,6 +216,7 @@ def append_log(
     before_state: dict[str, Any] | None = None,
     after_state: dict[str, Any] | None = None,
     undoes_ts: str | None = None,
+    batch: str | None = None,
 ) -> LogEntry:
     ts = now_local()
     tid = task_id or (task.id if task else "")
@@ -223,6 +235,7 @@ def append_log(
         before_state=before_state,
         after_state=after_state,
         undoes_ts=undoes_ts,
+        batch=batch,
     )
     path = log_path_for(ts.date(), root)
     with path.open("a", encoding="utf-8") as f:
@@ -257,6 +270,7 @@ def load_days(count: int = 14, *, today: date | None = None, root: Path | None =
 
 
 def load_recent_entries(days: int = 14, *, root: Path | None = None) -> list[LogEntry]:
+    """Хронология от старых к новым за последние days суток."""
     today = now_local().date()
     entries: list[LogEntry] = []
     for i in range(days - 1, -1, -1):
@@ -308,6 +322,7 @@ def find_undo_target(entries: list[LogEntry] | None = None, *, root: Path | None
 
 
 def find_redo_target(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> LogEntry | None:
+    """Последняя активная undo-запись (её undoes_ts ещё в множестве undone)."""
     entries = entries if entries is not None else load_recent_entries(root=root)
     undone = compute_undone_ts(entries)
     for e in reversed(entries):
@@ -319,7 +334,55 @@ def find_redo_target(entries: list[LogEntry] | None = None, *, root: Path | None
     return None
 
 
+MASS_UNDO_SEC = 5
+
+
+def find_undo_targets(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> list[LogEntry]:
+    """Если последнее действие массовое — все обратимые за последние 5 секунд."""
+    entries = entries if entries is not None else load_recent_entries(root=root)
+    last = find_undo_target(entries)
+    if last is None:
+        return []
+    if not (last.batch or "").strip():
+        return [last]
+    undone = compute_undone_ts(entries)
+    cutoff = last.ts - timedelta(seconds=MASS_UNDO_SEC)
+    out: list[LogEntry] = []
+    for e in reversed(entries):
+        if e.ts < cutoff:
+            continue
+        if not is_reversible(e) or e.ts_key in undone:
+            continue
+        out.append(e)
+    return out or [last]
+
+
+def find_redo_targets(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> list[LogEntry]:
+    """Пакет redo: все undo за 5 секунд, если исходное действие было массовым."""
+    entries = entries if entries is not None else load_recent_entries(root=root)
+    last = find_redo_target(entries)
+    if last is None:
+        return []
+    by_key = {e.ts_key: e for e in entries}
+    orig = by_key.get((last.undoes_ts or "").strip())
+    if orig is None or not (orig.batch or "").strip():
+        return [last]
+    undone = compute_undone_ts(entries)
+    cutoff = last.ts - timedelta(seconds=MASS_UNDO_SEC)
+    out: list[LogEntry] = []
+    for e in reversed(entries):
+        if e.ts < cutoff:
+            continue
+        if meta_kind(e) != "undo":
+            continue
+        ref = (e.undoes_ts or "").strip()
+        if ref and ref in undone:
+            out.append(e)
+    return out or [last]
+
+
 def completed_titles_for_day(day: date, root: Path | None = None) -> list[str]:
+    """Строки задач за день: «выполнена» или метка «контроль» (название + теги)."""
     from .tags import CONTROL_TAG, DONE_TAG, tags_to_cell
 
     ordered_ids: list[str] = []
@@ -342,9 +405,14 @@ def completed_titles_for_day(day: date, root: Path | None = None) -> list[str]:
         if not text:
             return False
         low = text.casefold()
-        return CONTROL_TAG in low or "👁" in text or "контрол" in low
+        return (
+            CONTROL_TAG in low
+            or "👁" in text
+            or "контрол" in low
+        )
 
     def _line_from_snapshot(task_id: str, text: str | None) -> str:
+        """Fallback из лога: убрать #id и даты, оставить название и теги."""
         raw = (text or "").strip()
         if not raw:
             return ""
@@ -400,7 +468,10 @@ def completed_titles_for_day(day: date, root: Path | None = None) -> list[str]:
         if e.action == "changed" and (
             detail == f"toggle {CONTROL_TAG}"
             or detail.startswith("toggle контрол")
-            or (_snapshot_control(e.after) and not _snapshot_control(e.before))
+            or (
+                _snapshot_control(e.after)
+                and not _snapshot_control(e.before)
+            )
         ):
             if _snapshot_control(e.after) and not _snapshot_control(e.before):
                 if tid:
@@ -435,6 +506,7 @@ def completed_titles_for_day(day: date, root: Path | None = None) -> list[str]:
 
 
 def day_sections(entries: list[LogEntry]) -> tuple[list[LogEntry], list[LogEntry], list[LogEntry]]:
+    """выполненные, изменённые, все (хронология с ранних)."""
     completed = [e for e in entries if e.action == "completed"]
     changed = [e for e in entries if e.action == "changed"]
     return completed, changed, list(entries)
@@ -460,6 +532,7 @@ def format_entry_line(e: LogEntry) -> str:
 
 
 def done_for_day_reply(day: date, label: str, root: Path | None = None) -> str:
+    """Текст как у команды СЕГОДНЯ, с произвольным заголовком."""
     titles = completed_titles_for_day(day, root)
     if not titles:
         return f"{label}: выполненных и «контроль» нет."

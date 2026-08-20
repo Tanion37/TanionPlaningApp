@@ -131,7 +131,7 @@ def screen_urgency(tasks: list[Task], today: date | None = None) -> list[tuple[s
         ("Сегодня", today_col),
         ("Неделя", week),
         ("Прочие", other),
-        ("Беклог", backlog),
+        ("Бэклог", backlog),
     ]
 
 
@@ -293,6 +293,18 @@ def screen_projects(tasks: list[Task], today: date | None = None) -> list[tuple[
         col.sort(key=lambda t: t.title.casefold())
         columns.append((name, col))
     return columns
+
+
+def screen_backlog(tasks: list[Task], today: date | None = None) -> list[tuple[str, list[Task]]]:
+    """Все незакрытые задачи с тегом бэклог."""
+    _ = today
+    pool = [
+        t
+        for t in tasks
+        if t.is_backlog() and not t.is_done() and not t.is_cancelled()
+    ]
+    pool.sort(key=lambda t: t.title.casefold())
+    return [("Бэклог", pool)]
 
 
 SCREENS = (

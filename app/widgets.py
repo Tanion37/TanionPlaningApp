@@ -728,6 +728,22 @@ class TagIconsPicker(QWidget):
     def selected_keys(self) -> list[str]:
         return list(self._tags)
 
+    def set_keys(self, keys: list[str]) -> None:
+        from .tags import canonicalize_tag_key
+
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for raw in keys or []:
+            key = canonicalize_tag_key(raw)
+            if key and key not in seen:
+                seen.add(key)
+                uniq.append(key)
+        self._tags = uniq
+        for key, circle in self._circles.items():
+            circle.set_selected(key in self._tags)
+        self._refresh_status()
+        self.changed.emit()
+
     def _toggle(self, key: str) -> None:
         if key in self._tags:
             self._tags.remove(key)
@@ -743,21 +759,27 @@ class TagIconsPicker(QWidget):
         self.status.setText(tags_to_cell(self._tags) or "(нет тегов)")
 
 
-class _DatePairGuard:
-    """Проверка due >= start только при accept (не мешает стрелкам года в календаре)."""
+class _DueCreatedHighlight:
+    """Подсветка due < created; сохранение не блокирует."""
 
-    def __init__(self, start: QDateEdit, due: QDateEdit) -> None:
-        self.start = start
+    def __init__(self, created: QDateEdit, due: QDateEdit) -> None:
+        self.created = created
         self.due = due
+        self._ok_style = due.styleSheet()
+        created.dateChanged.connect(self.refresh)
+        due.dateChanged.connect(self.refresh)
+        QTimer.singleShot(0, self.refresh)
+
+    def refresh(self) -> None:
+        created_v = _opt_date(self.created)
+        due_v = _opt_date(self.due)
+        if created_v is not None and due_v is not None and due_v < created_v:
+            self.due.setStyleSheet("QDateEdit { background: #ffcccc; }")
+        else:
+            self.due.setStyleSheet(self._ok_style)
 
     def validate_or_flash(self) -> bool:
-        start_v = _opt_date(self.start)
-        due_v = _opt_date(self.due)
-        if start_v is not None and due_v is not None and due_v < start_v:
-            prev = self.due.styleSheet()
-            self.due.setStyleSheet("QDateEdit { background: #ffcccc; }")
-            QTimer.singleShot(1000, lambda: self.due.setStyleSheet(prev))
-            return False
+        self.refresh()
         return True
 
 
@@ -770,12 +792,33 @@ class NewTaskDialog(QDialog):
         default_start: date | None = None,
         default_tags: str = "",
         all_tasks: list[Task] | None = None,
+        executor_names: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Новая задача")
         self.setModal(True)
-        _dialog_default_size(self, parent, 520, 620)
+        _dialog_default_size(self, parent, 520, 680)
         root = QVBoxLayout(self)
+
+        from .create_presets import CREATE_PRESETS
+
+        self._create_preset: str | None = None
+        self._preset_buttons: dict[str, QPushButton] = {}
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        for label in CREATE_PRESETS:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                "QPushButton { padding:4px 8px; }"
+                "QPushButton:checked { background:#DCEBFF; border:1px solid #4A90D9; }"
+            )
+            btn.clicked.connect(lambda _checked=False, name=label: self._on_preset(name))
+            preset_row.addWidget(btn)
+            self._preset_buttons[label] = btn
+        preset_row.addStretch(1)
+        root.addLayout(preset_row)
+
         form = QFormLayout()
 
         self.title_edit = QLineEdit()
@@ -815,14 +858,33 @@ class NewTaskDialog(QDialog):
         remind_lay.addWidget(self.remind_time)
         form.addRow("Напоминание", remind_row)
 
-        self._date_pair = _DatePairGuard(self.start, self.due)
+        self._date_pair = _DueCreatedHighlight(self.created, self.due)
 
         self.period = QComboBox()
         self.period.addItems(list(REMIND_PERIODS))
+        self.period.setToolTip(
+            "Новая копия с теми же полями; даты сдвигаются. "
+            "Пока висит открытый экземпляр серии – следующая не появится."
+        )
         form.addRow("Периодичность", self.period)
 
         self.author = QLineEdit()
         form.addRow("Кто поставил", self.author)
+
+        self.executor = QComboBox()
+        self.executor.setEditable(False)
+        self.executor.addItem("")
+        names = list(executor_names or [])
+        from .executors_store import DEFAULT_EXECUTOR
+
+        if DEFAULT_EXECUTOR not in names:
+            names = [DEFAULT_EXECUTOR, *names]
+        for name in names:
+            self.executor.addItem(name)
+        idx = self.executor.findText(DEFAULT_EXECUTOR)
+        if idx >= 0:
+            self.executor.setCurrentIndex(idx)
+        form.addRow("Исполнитель", self.executor)
 
         root.addLayout(form)
 
@@ -835,7 +897,8 @@ class NewTaskDialog(QDialog):
         root.addWidget(self.tag_picker)
 
         hint = QLabel(
-            "Обязательно только название. Остальные поля можно оставить пустыми."
+            "Обязательно только название. Пресет сверху задаёт теги и маршрут задачи. "
+            "Время напоминания — если задано, бот пришлёт в Telegram."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -847,6 +910,22 @@ class NewTaskDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def _on_preset(self, name: str) -> None:
+        from .create_presets import tags_for_preset
+
+        if self._create_preset == name:
+            self._create_preset = None
+            self._preset_buttons[name].setChecked(False)
+            return
+        self._create_preset = name
+        for key, btn in self._preset_buttons.items():
+            btn.setChecked(key == name)
+        # сохраняем несистемные теги пользователя
+        self.tag_picker.set_keys(tags_for_preset(name, self.tag_picker.selected_keys()))
+
+    def create_preset(self) -> str | None:
+        return self._create_preset
+
     def _try_accept(self) -> None:
         if not self._date_pair.validate_or_flash():
             return
@@ -856,6 +935,8 @@ class NewTaskDialog(QDialog):
         title = self.title_edit.text().strip()
         if not title:
             return None
+        from .executors_store import DEFAULT_EXECUTOR
+
         return {
             "title": title,
             "project": self.project_edit.text().strip(),
@@ -868,7 +949,9 @@ class NewTaskDialog(QDialog):
             "remind_time": _opt_time(self.remind_time) or "",
             "remind_period": self.period.currentText(),
             "author": self.author.text().strip(),
+            "executor": self.executor.currentText().strip() or DEFAULT_EXECUTOR,
             "tags": self.tag_picker.selected_keys(),
+            "create_preset": self._create_preset,
         }
 
 
@@ -881,13 +964,33 @@ class EditTaskDialog(QDialog):
         parent: QWidget | None = None,
         project_names: list[str] | None = None,
         all_tasks: list[Task] | None = None,
+        executor_names: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Задача #{task.id}")
         self.setModal(True)
-        _dialog_default_size(self, parent, 560, 640)
+        _dialog_default_size(self, parent, 560, 680)
 
         root = QVBoxLayout(self)
+
+        from .create_presets import CREATE_PRESETS
+
+        self._create_preset: str | None = None
+        self._preset_buttons: dict[str, QPushButton] = {}
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        for label in CREATE_PRESETS:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                "QPushButton { padding:4px 8px; }"
+                "QPushButton:checked { background:#DCEBFF; border:1px solid #4A90D9; }"
+            )
+            btn.clicked.connect(lambda _checked=False, name=label: self._on_preset(name))
+            preset_row.addWidget(btn)
+            self._preset_buttons[label] = btn
+        preset_row.addStretch(1)
+        root.addLayout(preset_row)
 
         form = QFormLayout()
         self.title_edit = QLineEdit(task.title)
@@ -905,6 +1008,20 @@ class EditTaskDialog(QDialog):
 
         self.author = QLineEdit(task.author)
         form.addRow("Кто поставил", self.author)
+
+        self.executor = QComboBox()
+        self.executor.setEditable(False)
+        self.executor.addItem("")
+        names = list(executor_names or [])
+        current = getattr(task, "executor", "") or ""
+        if current and current not in names:
+            names = [current, *names]
+        for name in names:
+            self.executor.addItem(name)
+        idx = self.executor.findText(current)
+        if idx >= 0:
+            self.executor.setCurrentIndex(idx)
+        form.addRow("Исполнитель", self.executor)
 
         self.created = _make_clearable_date(task.created_at)
         form.addRow("Дата постановки", self.created)
@@ -931,13 +1048,17 @@ class EditTaskDialog(QDialog):
         remind_lay.addWidget(self.remind_time)
         form.addRow("Напоминание", remind_row)
 
-        self._date_pair = _DatePairGuard(self.start, self.due)
+        self._date_pair = _DueCreatedHighlight(self.created, self.due)
 
         self.period = QComboBox()
         self.period.addItems(list(REMIND_PERIODS))
         idx = self.period.findText(task.remind_period)
         if idx >= 0:
             self.period.setCurrentIndex(idx)
+        self.period.setToolTip(
+            "Новая копия с теми же полями; даты сдвигаются. "
+            "Пока висит открытый экземпляр серии – следующая не появится."
+        )
         form.addRow("Периодичность", self.period)
 
         root.addLayout(form)
@@ -954,6 +1075,18 @@ class EditTaskDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def _on_preset(self, name: str) -> None:
+        from .create_presets import tags_for_preset
+
+        if self._create_preset == name:
+            self._create_preset = None
+            self._preset_buttons[name].setChecked(False)
+            return
+        self._create_preset = name
+        for key, btn in self._preset_buttons.items():
+            btn.setChecked(key == name)
+        self.tag_picker.set_keys(tags_for_preset(name, self.tag_picker.selected_keys()))
+
     def _try_accept(self) -> None:
         if not self._date_pair.validate_or_flash():
             return
@@ -968,6 +1101,7 @@ class EditTaskDialog(QDialog):
             "project": self.project_edit.text().strip(),
             "description": self.description_edit.toPlainText(),
             "author": self.author.text().strip(),
+            "executor": self.executor.currentText().strip(),
             "created_at": _opt_date(self.created),
             "completed_at": parse_date(self.completed_text.text().strip()),
             "start_at": _opt_date(self.start),
@@ -976,4 +1110,5 @@ class EditTaskDialog(QDialog):
             "remind_time": _opt_time(self.remind_time) or "",
             "remind_period": self.period.currentText(),
             "tags": self.tag_picker.selected_keys(),
+            "create_preset": self._create_preset,
         }

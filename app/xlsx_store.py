@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -11,8 +12,11 @@ from openpyxl import Workbook, load_workbook
 from .models import Task, format_date, parse_date
 from .projects import resolve_project_name, unify_project_casing
 from .tags import (
+    IMPORTANT_TAG,
+    canonicalize_tag_key,
     collect_tag_usage,
     migrate_tag_list,
+    normalize_tag_token,
     parse_tags_cell,
     tags_to_cell,
 )
@@ -20,6 +24,19 @@ from .tags import (
 
 def _normalize_tag_list(tags: list[str], *, usage=None) -> list[str]:
     return migrate_tag_list(tags, usage=usage)
+
+
+def _migrate_social_project(task: Task) -> bool:
+    """Проект «соцсети» → тег соцсети, поле проекта очистить."""
+    from .projects import project_key
+    from .tags import SOCIAL_TAG
+
+    if project_key(task.project) != "соцсети":
+        return False
+    task.project = ""
+    if SOCIAL_TAG not in task.tags:
+        task.tags.append(SOCIAL_TAG)
+    return True
 
 TZ = timezone(timedelta(hours=3))
 TASKS_SHEET = "tasks"
@@ -35,6 +52,7 @@ COLUMNS: tuple[str, ...] = (
     "время напоминания",
     "периодичность напоминания",
     "кто поставил задачу",
+    "исполнитель",
     "проект",
     "описание",
     "теги",
@@ -43,6 +61,7 @@ COLUMNS: tuple[str, ...] = (
     "author_id",
     "chat_id",
     "source",
+    "серия",
 )
 
 HEADER_ALIASES: dict[str, str] = {
@@ -65,6 +84,9 @@ HEADER_ALIASES: dict[str, str] = {
     "периодичность напоминания": "периодичность напоминания",
     "кто поставил задачу": "кто поставил задачу",
     "author": "кто поставил задачу",
+    "исполнитель": "исполнитель",
+    "executor": "исполнитель",
+    "assignee": "исполнитель",
     "проект": "проект",
     "project": "проект",
     "описание": "описание",
@@ -77,6 +99,9 @@ HEADER_ALIASES: dict[str, str] = {
     "author_id": "author_id",
     "chat_id": "chat_id",
     "source": "source",
+    "серия": "серия",
+    "series": "серия",
+    "series_id": "серия",
 }
 
 
@@ -91,6 +116,7 @@ def _normalize_remind_time(value) -> str:
     if value is None or value == "":
         return ""
     if hasattr(value, "hour") and hasattr(value, "minute"):
+        # time / datetime from openpyxl
         try:
             return f"{int(value.hour):02d}:{int(value.minute):02d}"
         except (TypeError, ValueError):
@@ -98,6 +124,7 @@ def _normalize_remind_time(value) -> str:
     text = str(value).strip()
     if not text:
         return ""
+    # "14:30" or "14:30:00" or ISO with T
     if "T" in text:
         text = text.split("T", 1)[1]
     text = text.replace(".", ":")
@@ -151,16 +178,24 @@ class TaskStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             return
+        json_path = self.path.parent.parent / "tasks.json"
+        if json_path.exists():
+            self.tasks = self._from_json(json_path)
+            self.save()
+            return
         self.tasks = []
         self.save()
 
     def load(self) -> list[Task]:
         self.ensure_exists()
+        # data_only=False: формулы не нужны; False надёжнее при свежем сохранении из Excel
         wb = load_workbook(self.path, data_only=False)
+        # Важно: НЕ wb.active — после Excel активным может быть lists → «пустые» задачи
         if TASKS_SHEET in wb.sheetnames:
             ws = wb[TASKS_SHEET]
         else:
             ws = wb.active
+            # если активный лист — не tasks (например lists), ищем по заголовку
             rows_probe = list(ws.iter_rows(values_only=True, max_row=1))
             header = rows_probe[0] if rows_probe else ()
             if "название" not in _header_map(tuple(header) if header else ()):
@@ -177,6 +212,7 @@ class TaskStore:
 
         mapping = _header_map(rows[0])
         if "название" not in mapping:
+            # старый формат без заголовков – считаем первой колонкой название
             mapping = {"название": 0}
 
         tasks: list[Task] = []
@@ -223,6 +259,7 @@ class TaskStore:
                     author=str(
                         _cell(row, mapping, "кто поставил задачу") or ""
                     ).strip(),
+                    executor=str(_cell(row, mapping, "исполнитель") or "").strip(),
                     project=str(_cell(row, mapping, "проект") or "").strip(),
                     description=str(_cell(row, mapping, "описание") or "").strip(),
                     tags=parse_tags_cell(str(_cell(row, mapping, "теги") or "")),
@@ -231,6 +268,7 @@ class TaskStore:
                     author_id=int(author_id) if author_id not in (None, "") else None,
                     chat_id=int(chat_id) if chat_id not in (None, "") else None,
                     source=str(_cell(row, mapping, "source") or "xlsx").strip(),
+                    series_id=str(_cell(row, mapping, "серия") or "").strip(),
                 )
             )
         usage = collect_tag_usage(t.tags for t in tasks)
@@ -240,10 +278,17 @@ class TaskStore:
             if new_tags != task.tags:
                 task.tags = new_tags
                 migrated = True
+            if _migrate_social_project(task):
+                migrated = True
+        from .period_roll import ensure_series_ids
+
+        if ensure_series_ids(tasks):
+            migrated = True
         self.tasks = tasks
         if unify_project_casing(self.tasks) or migrated:
             self.save()
         else:
+            # справочник тегов на отдельной вкладке
             self._ensure_tags_sheet()
         return self.tasks
 
@@ -261,6 +306,7 @@ class TaskStore:
             pass
 
     def save(self) -> None:
+        """Перезаписать лист tasks, сохранив остальные вкладки (lists и т.д.)."""
         from .tags_sheet import write_tags_sheet
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -287,6 +333,7 @@ class TaskStore:
                     getattr(task, "remind_time", "") or "",
                     task.remind_period,
                     task.author,
+                    getattr(task, "executor", "") or "",
                     task.project,
                     task.description,
                     tags_to_cell(task.tags),
@@ -295,6 +342,7 @@ class TaskStore:
                     task.author_id,
                     task.chat_id,
                     task.source,
+                    getattr(task, "series_id", "") or "",
                 ]
             )
         write_tags_sheet(wb)
@@ -312,6 +360,7 @@ class TaskStore:
             remind_time=str(kwargs.get("remind_time") or "").strip(),
             remind_period=kwargs.get("remind_period", ""),
             author=kwargs.get("author", ""),
+            executor=str(kwargs.get("executor") or "").strip(),
             project=resolve_project_name(kwargs.get("project"), self.tasks),
             description=str(kwargs.get("description") or ""),
             tags=_normalize_tag_list(list(kwargs.get("tags") or [])),
@@ -320,7 +369,11 @@ class TaskStore:
             author_id=kwargs.get("author_id"),
             chat_id=kwargs.get("chat_id"),
             source=kwargs.get("source", "app"),
+            series_id=str(kwargs.get("series_id") or "").strip(),
         )
+        from .period_roll import ensure_task_series
+
+        ensure_task_series(task)
         self.tasks.append(task)
         self.save()
         return task
@@ -350,3 +403,54 @@ class TaskStore:
         self.tasks.append(task)
         self.save()
         return task
+
+    def _from_json(self, path: Path) -> list[Task]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tasks: list[Task] = []
+        for item in data.get("tasks", []):
+            created = parse_date(item.get("created_at"))
+            completed = parse_date(item.get("completed_at"))
+            due = parse_date(item.get("due"))
+            remind = parse_date(item.get("remind_at"))
+            tags = list(item.get("tags") or [])
+            # нормализуем текстовые теги из старого json
+            from .tags import normalize_tag_token
+
+            normalized: list[str] = []
+            for tag in tags:
+                key = normalize_tag_token(str(tag))
+                if key and key not in normalized:
+                    normalized.append(key)
+            if item.get("status") == "done":
+                from .tags import DONE_TAG
+
+                if DONE_TAG not in normalized:
+                    normalized.append(DONE_TAG)
+            normalized = _normalize_tag_list(normalized)
+            if item.get("priority") == "high" and IMPORTANT_TAG not in normalized:
+                normalized.append(IMPORTANT_TAG)
+            tasks.append(
+                Task(
+                    id=str(item.get("id", _next_id(tasks))),
+                    title=str(item.get("title", "")).strip(),
+                    created_at=created,
+                    completed_at=completed,
+                    start_at=None,
+                    due_at=due,
+                    remind_at=remind,
+                    remind_time=_normalize_remind_time(
+                        item.get("remind_time") or item.get("remind_at")
+                    ),
+                    remind_period="каждый день" if item.get("remind_daily") else "",
+                    author=str(item.get("author") or ""),
+                    executor=str(item.get("executor") or "").strip(),
+                    project=str(item.get("project") or ""),
+                    description=str(item.get("notes") or item.get("description") or ""),
+                    tags=normalized,
+                    author_id=item.get("author_id"),
+                    chat_id=item.get("chat_id"),
+                    source=str(item.get("source") or "json"),
+                    series_id=str(item.get("series_id") or "").strip(),
+                )
+            )
+        return tasks

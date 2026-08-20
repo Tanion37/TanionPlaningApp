@@ -13,13 +13,23 @@ URGENT_TAG = "срочная"
 INBOX_TAG = "входящая"
 ACTUAL_TAG = "актуальная"
 CHECKED_TAG = "проверенная"
-BACKLOG_TAG = "отложенная"
+BACKLOG_TAG = "бэклог"
 CORRESPONDENCE_TAG = "переписка"
 CONTROL_TAG = "контроль"
+# совместимость: бывший тег «ответы» / кнопка Ответы
 ANSWERS_TAG = CORRESPONDENCE_TAG
 TODAY_ACTION = "__today__"
 TOMORROW_ACTION = "__tomorrow__"
 WEEK_ACTION = "__week__"
+DONE_CHECK_ACTION = "__done_check__"
+SOCIAL_TAG = "соцсети"
+SPECIAL_ACTION_KEYS = frozenset(
+    {TODAY_ACTION, TOMORROW_ACTION, WEEK_ACTION, DONE_CHECK_ACTION}
+)
+# Кисти, которые по клику на раздел применяются ко всем задачам раздела.
+SECTION_BRUSH_KEYS = frozenset(
+    {TOMORROW_ACTION, WEEK_ACTION, BACKLOG_TAG, INBOX_TAG}
+)
 
 DONE_ALIASES = frozenset(
     {
@@ -43,6 +53,7 @@ CANCEL_ALIASES = frozenset(
     }
 )
 
+# Жёсткие миграции старых имён → канон
 LEGACY_TAG_MAP: dict[str, str] = {
     "выполненное": DONE_TAG,
     "выполнено": DONE_TAG,
@@ -61,6 +72,8 @@ LEGACY_TAG_MAP: dict[str, str] = {
     "проверено": CHECKED_TAG,
     "проверена": CHECKED_TAG,
     "беклог": BACKLOG_TAG,
+    "бэклог": BACKLOG_TAG,
+    "отложенная": BACKLOG_TAG,
     "backlog": BACKLOG_TAG,
     "ответы": CORRESPONDENCE_TAG,
     "ответная": CORRESPONDENCE_TAG,
@@ -90,8 +103,10 @@ SYSTEM_TAG_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Теги, которые показываются в правой панели, а не в нижней полосе
 SIDEBAR_TAG_KEYS: frozenset[str] = frozenset({BACKLOG_TAG})
 
+# Старые теги дней недели — снимаются при миграции
 LEGACY_WEEKDAY_KEYS: frozenset[str] = frozenset(
     {"ПН", "ВТ", "СР", "ЧТ", "ПТ", "ВХ", "пн", "вт", "ср", "чт", "пт", "вх"}
 )
@@ -102,10 +117,12 @@ class TagDef:
     key: str
     symbol: str
     label: str
-    weekday: int | None = None
+    weekday: int | None = None  # устарело, всегда None
     is_weekend: bool = False
 
 
+# важная: ⚠; срочная: 🔥; выполнена: ✅; отменена: 🗑
+# входящая: ⬇; актуальная: ★; проверенная: ☑; бэклог: 🗄
 TAGS: tuple[TagDef, ...] = (
     TagDef(IMPORTANT_TAG, "⚠", IMPORTANT_TAG),
     TagDef(URGENT_TAG, "🔥", URGENT_TAG),
@@ -121,6 +138,7 @@ TAGS: tuple[TagDef, ...] = (
     TagDef("обдумываемая", "💡", "обдумываемая"),
     TagDef("уличная", "🚶", "уличная"),
     TagDef("личная", "🏠", "личная"),
+    TagDef(SOCIAL_TAG, "📱", SOCIAL_TAG),
     TagDef("ИИ", "🤖", "ИИ"),
     TagDef(CORRESPONDENCE_TAG, "💬", CORRESPONDENCE_TAG),
     TagDef("делегируемая", "📤", "делегируемая"),
@@ -143,7 +161,7 @@ BY_SYMBOL["★"] = BY_KEY[ACTUAL_TAG]
 BY_SYMBOL["☑"] = BY_KEY[CHECKED_TAG]
 BY_SYMBOL["💡"] = BY_KEY["обдумываемая"]
 BY_SYMBOL["🗄"] = BY_KEY[BACKLOG_TAG]
-BY_SYMBOL["✉"] = BY_KEY[CORRESPONDENCE_TAG]
+BY_SYMBOL["✉"] = BY_KEY[CORRESPONDENCE_TAG]  # старый символ «ответы»
 BY_SYMBOL["🧱"] = BY_KEY["сложная"]
 BY_SYMBOL["🐸"] = BY_KEY["сложная"]
 BY_SYMBOL["👁️"] = BY_KEY[CONTROL_TAG]
@@ -151,6 +169,7 @@ BY_SYMBOL["👀"] = BY_KEY[CONTROL_TAG]
 BY_SYMBOL["ПРО"] = BY_KEY["ПРОГД"]
 BY_SYMBOL["про"] = BY_KEY["ПРОГД"]
 
+# Сортировка по тегам на экране: без системных
 TAG_SORT_KEYS: tuple[str, ...] = tuple(
     t.key for t in TAGS if t.key not in SYSTEM_TAG_KEYS
 )
@@ -171,6 +190,7 @@ def normalize_tag_text(key: str) -> str:
 
 
 def _stems(text: str) -> set[str]:
+    """Префиксы после отрезания 0–2 последних букв (для нечёткого сравнения)."""
     n = normalize_tag_text(text)
     if not n:
         return set()
@@ -183,6 +203,7 @@ def _stems(text: str) -> set[str]:
 
 
 def tags_differ_by_at_most_two_letters(a: str, b: str) -> bool:
+    """True, если ключи отличаются не более чем в 1–2 последних буквах."""
     na, nb = normalize_tag_text(a), normalize_tag_text(b)
     if not na or not nb:
         return False
@@ -200,6 +221,7 @@ def most_frequent_tag_variant(
     candidates: Iterable[str],
     usage: Counter[str] | None = None,
 ) -> str | None:
+    """Выбрать наиболее употребимый вариант; при равенстве — системный/известный."""
     items = [c for c in candidates if c]
     if not items:
         return None
@@ -231,6 +253,7 @@ def find_fuzzy_match(
     known: Iterable[str],
     usage: Counter[str] | None = None,
 ) -> str | None:
+    """Найти среди known канон, совпадающий с key по правилу 1–2 букв."""
     matches = [k for k in known if tags_differ_by_at_most_two_letters(key, k)]
     if not matches:
         return None
@@ -287,6 +310,7 @@ def normalize_tag_token(
     usage: Counter[str] | None = None,
     extra_known: Iterable[str] | None = None,
 ) -> str | None:
+    """Вернуть ключ тега по символу, ключу или алиасу."""
     raw = token.strip()
     if not raw:
         return None
@@ -310,6 +334,7 @@ def normalize_tag_token(
         "проверена": CHECKED_TAG,
         "проверенная": CHECKED_TAG,
         "беклог": BACKLOG_TAG,
+        "бэклог": BACKLOG_TAG,
         "backlog": BACKLOG_TAG,
         "отложенная": BACKLOG_TAG,
         "ответы": CORRESPONDENCE_TAG,
@@ -354,6 +379,7 @@ def parse_tags_cell(
     *,
     usage: Counter[str] | None = None,
 ) -> list[str]:
+    """Разобрать колонку тегов: символы подряд или через пробел/запятую."""
     if not value:
         return []
     text = str(value).strip()
@@ -419,6 +445,7 @@ def is_system_tag(key: str) -> bool:
 
 
 def clear_inbox_tag(task) -> bool:
+    """Снять входящая / legacy входящие. True, если что-то сняли."""
     changed = False
     if task.remove_tag(INBOX_TAG):
         changed = True
@@ -428,6 +455,7 @@ def clear_inbox_tag(task) -> bool:
 
 
 def clear_actual_tag(task) -> bool:
+    """Снять актуальная / legacy актуально."""
     changed = False
     if task.remove_tag(ACTUAL_TAG):
         changed = True
@@ -437,12 +465,14 @@ def clear_actual_tag(task) -> bool:
 
 
 def assign_start_at(task, new_start, *, clear_inbox: bool = True) -> None:
+    """Выставить start_at; по умолчанию снять входящую (планирование во времени)."""
     if clear_inbox:
         clear_inbox_tag(task)
     task.start_at = new_start
 
 
 def apply_control_tag(task, today=None) -> None:
+    """Контроль: тег + старт завтра + снять актуальную."""
     from datetime import date, timedelta
 
     today = today or date.today()
@@ -456,6 +486,7 @@ def migrate_tag_list(
     *,
     usage: Counter[str] | None = None,
 ) -> list[str]:
+    """Нормализовать список тегов: legacy map, weekday drop, fuzzy, дедуп."""
     out: list[str] = []
     seen: set[str] = set()
     for tag in tags:

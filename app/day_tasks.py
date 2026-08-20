@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 from typing import Iterable
 
+from .executors_store import is_own_executor
 from .models import Task
 from .tags import (
     ACTUAL_TAG,
     IMPORTANT_TAG,
     INBOX_TAG,
+    SYSTEM_TAG_KEYS,
     URGENT_TAG,
     canonicalize_tag_key,
     is_system_tag,
@@ -27,7 +30,9 @@ def refresh_inbox_tags(tasks: Iterable[Task], today: date | None = None) -> bool
     for task in tasks:
         if task.is_hidden_from_boards():
             continue
-        if task.is_actual():
+        if task.is_actual() or task.is_backlog():
+            continue
+        if not is_own_executor(getattr(task, "executor", None)):
             continue
         start_ok = task.start_at is None or task.start_at <= today
         if not start_ok:
@@ -39,7 +44,13 @@ def refresh_inbox_tags(tasks: Iterable[Task], today: date | None = None) -> bool
 
 def inbox_tasks(tasks: Iterable[Task]) -> list[Task]:
     return sorted(
-        [t for t in tasks if not t.is_hidden_from_boards() and t.is_inbox()],
+        [
+            t
+            for t in tasks
+            if not t.is_hidden_from_boards()
+            and t.is_inbox()
+            and is_own_executor(getattr(t, "executor", None))
+        ],
         key=lambda t: t.title.casefold(),
     )
 
@@ -47,6 +58,8 @@ def inbox_tasks(tasks: Iterable[Task]) -> list[Task]:
 def priority_section_of(task: Task) -> str | None:
     """Горит / Нужно / Можно для задач с актуально (и без входящие предпочтительно)."""
     if task.is_hidden_from_boards():
+        return None
+    if not is_own_executor(getattr(task, "executor", None)):
         return None
     if not task.is_actual():
         return None
@@ -87,6 +100,18 @@ def apply_priority_section(task: Task, section: str) -> None:
         task.remove_tag(URGENT_TAG)
 
 
+def apply_inbox_to_task(task: Task, today: date | None = None) -> None:
+    """Перевести задачу во входящие (кисть «Входящие»)."""
+    from .tags import BACKLOG_TAG, assign_start_at, clear_actual_tag
+
+    today = today or date.today()
+    clear_actual_tag(task)
+    task.remove_tag(BACKLOG_TAG)
+    task.add_tag(INBOX_TAG)
+    if task.start_at is None or task.start_at > today:
+        assign_start_at(task, today, clear_inbox=False)
+
+
 def move_actual_to_inbox(tasks: Iterable[Task]) -> int:
     """Все актуально кроме важно+срочно → входящие. Вернуть число изменённых."""
     n = 0
@@ -116,6 +141,7 @@ def non_system_tags_of(task: Task) -> list[str]:
 
 UNTAGGED_SECTION = "без тега"
 
+# Явные мн.ч. для сущ. ж.р. ед.ч. (не прилагательные на -ая/-яя)
 _SECTION_PLURAL_SPECIAL: dict[str, str] = {
     "переписка": "переписки",
 }
@@ -156,6 +182,8 @@ def day_tag_counts(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
     for task in tasks:
         if task.is_hidden_from_boards() or not task.is_actual():
             continue
+        if not is_own_executor(getattr(task, "executor", None)):
+            continue
         tags = non_system_tags_of(task)
         if not tags:
             untagged.append(task)
@@ -188,6 +216,7 @@ def pack_day_columns(
     loads = [0] * n
     for sec in sections:
         _tag, tasks = sec
+        # при равенстве — левее (стабильнее читать слева направо)
         i = min(range(n), key=lambda j: (loads[j], j))
         columns[i].append(sec)
         loads[i] += len(tasks)
@@ -196,3 +225,19 @@ def pack_day_columns(
 
 def rank_signature(sections: list[tuple[str, list[Task]]]) -> tuple:
     return tuple((tag, len(tasks)) for tag, tasks in sections)
+
+
+def executor_sections(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
+    """Разделы ДЕНЬ по исполнителям, кроме Юры / пустого."""
+    by_name: dict[str, list[Task]] = {}
+    for task in tasks:
+        if task.is_hidden_from_boards():
+            continue
+        name = (getattr(task, "executor", None) or "").strip()
+        if is_own_executor(name):
+            continue
+        by_name.setdefault(name, []).append(task)
+    items = sorted(by_name.items(), key=lambda item: item[0].casefold())
+    for _, lst in items:
+        lst.sort(key=day_task_rank)
+    return items

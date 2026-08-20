@@ -7,7 +7,9 @@ alwaysApply: true
 
 Публичный снимок десктоп-планировщика. Личных задач, клиентов и токенов нет.
 
-- Запуск: `py -3 -m app` из корня после `py -3 -m pip install -r requirements.txt`.
+Рабочая копия: `D:\CURSOR\TanionPlaning`. Сюда синхронизируют только `app/`.
+
+- Запуск снимка: `py -3 -m app` из корня после `py -3 -m pip install -r requirements.txt`.
 - Данные только в `data/` (xlsx). Этот каталог не коммитить.
 - Не добавлять Telegram-бота, `config.json`, `tasks.json`, `customers.json`.
-- Правки UI и логики – пакет `app/`.
+- Не считать этот репозиторий ежедневным рабочим деревом.

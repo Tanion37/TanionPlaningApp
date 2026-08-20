@@ -10,11 +10,13 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from .day_hide import without_hidden as without_day_hidden
 from .day_tasks import (
     SECTION_GORIT,
     SECTION_MOZHNO,
@@ -22,6 +24,7 @@ from .day_tasks import (
     UNTAGGED_SECTION,
     apply_priority_section,
     day_tag_counts,
+    executor_sections,
     inbox_tasks,
     pack_day_columns,
     priority_sections,
@@ -153,6 +156,8 @@ class DayTasksCanvas(QWidget):
         self._last_day_pack: tuple[int, int] | None = None
         self._day_relayouting = False
         self._defer_inbox_hook = False
+        self._section_ids: dict[tuple[str, str], list[str]] = {}
+        self._executor_labels: dict[str, QLabel] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -173,6 +178,11 @@ class DayTasksCanvas(QWidget):
         inbox_l.setContentsMargins(0, 0, 0, 0)
         inbox_title = QLabel("Входящие")
         inbox_title.setFont(f)
+        inbox_title.setCursor(Qt.CursorShape.PointingHandCursor)
+        inbox_title.setToolTip(
+            "Кисть Завтра / Неделя / Бэклог / Входящие / исполнитель — ко всем задачам раздела"
+        )
+        inbox_title.mousePressEvent = lambda event: self._on_heading_press(event, "inbox", "inbox")  # type: ignore[method-assign]
         inbox_l.addWidget(inbox_title)
         self.inbox_scroll = QScrollArea()
         self.inbox_scroll.setWidgetResizable(True)
@@ -245,6 +255,16 @@ class DayTasksCanvas(QWidget):
         self.setStyleSheet("background:#FAFAF7;")
         self._apply_side_margins()
 
+    def _on_heading_press(self, event, kind: str, name: str) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.main.on_day_section_click(kind, name)
+            event.accept()
+            return
+        event.ignore()
+
+    def section_task_ids(self, kind: str, name: str) -> list[str]:
+        return list(self._section_ids.get((kind, name), []))
+
     def _apply_side_margins(self, controls_on_left: bool | None = None) -> None:
         """Сдвиг контента от панели кнопок (не накладывать на задачи)."""
         if controls_on_left is None:
@@ -283,6 +303,15 @@ class DayTasksCanvas(QWidget):
         for sec in (self.sec_gorit, self.sec_nuzhno, self.sec_mozhno):
             sec.set_paint_highlight(sec.section == section)
 
+    def set_executor_highlight(self, name: str | None) -> None:
+        for key, lab in self._executor_labels.items():
+            if name and key == name:
+                lab.setStyleSheet(
+                    "color:#1a5fb4; font-weight:700; background:#DCEBFF; padding:1px 4px;"
+                )
+            else:
+                lab.setStyleSheet("color:#444; font-weight:600;")
+
     def _clear_blocks(self) -> None:
         for block in self._blocks:
             block.setParent(None)
@@ -305,11 +334,10 @@ class DayTasksCanvas(QWidget):
 
     def rebuild(self, *, defer_inbox_hook: bool = False) -> None:
         today = date.today()
-        tasks = self.main.visible_tasks()
         if not self.main.demo_mode:
             if refresh_inbox_tags(self.main.store.tasks, today):
                 self.main.store.save()
-                tasks = self.main.visible_tasks()
+        tasks = without_day_hidden(self.main.visible_tasks())
 
         inbox = inbox_tasks(tasks)
         has_inbox = bool(inbox)
@@ -320,6 +348,8 @@ class DayTasksCanvas(QWidget):
         self._apply_side_margins(want_left)
         self._clear_blocks()
         self._day_tag_circles.clear()
+        self._executor_labels.clear()
+        self._section_ids = {}
 
         # Входящие
         while self.inbox_layout.count():
@@ -331,6 +361,7 @@ class DayTasksCanvas(QWidget):
         for task in inbox:
             self.inbox_layout.addWidget(self._make_block(task))
         self.inbox_layout.addStretch(1)
+        self._section_ids[("inbox", "inbox")] = [t.id for t in inbox]
 
         # Приоритет
         for sec in (self.sec_gorit, self.sec_nuzhno, self.sec_mozhno):
@@ -342,6 +373,9 @@ class DayTasksCanvas(QWidget):
             self.sec_nuzhno.add_block(self._make_block(task))
         for task in sections[SECTION_MOZHNO]:
             self.sec_mozhno.add_block(self._make_block(task))
+        self._section_ids[("priority", SECTION_GORIT)] = [t.id for t in sections[SECTION_GORIT]]
+        self._section_ids[("priority", SECTION_NUZHNO)] = [t.id for t in sections[SECTION_NUZHNO]]
+        self._section_ids[("priority", SECTION_MOZHNO)] = [t.id for t in sections[SECTION_MOZHNO]]
 
         for sec, key in (
             (self.sec_gorit, SECTION_GORIT),
@@ -357,7 +391,10 @@ class DayTasksCanvas(QWidget):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+        exec_sections = executor_sections(tasks)
         tag_sections = day_tag_counts(tasks)
+        exec_names = {name for name, _ in exec_sections}
+        all_sections = list(exec_sections) + list(tag_sections)
         avail_h = max(200, self.day_scroll.viewport().height() - 8)
         avail_w = self._estimate_day_width(has_inbox=has_inbox, controls_on_left=want_left)
         viewport_w = max(0, self.day_scroll.viewport().width() - 8)
@@ -370,10 +407,14 @@ class DayTasksCanvas(QWidget):
             avail_w = viewport_w
         col_count = max(1, avail_w // (COL_W + COL_GAP))
         self._last_day_pack = (col_count, avail_h)
-        columns = pack_day_columns(tag_sections, col_count=col_count)
+        columns = pack_day_columns(all_sections, col_count=col_count)
         paint_key = None
-        if getattr(self.main, "paint_mode", None) and self.main.paint_mode[0] == "tag":
-            paint_key = self.main.paint_mode[1]
+        exec_paint = None
+        pm = getattr(self.main, "paint_mode", None)
+        if pm and pm[0] == "tag":
+            paint_key = pm[1]
+        elif pm and pm[0] == "executor":
+            exec_paint = pm[1]
         for col_sections in columns:
             col_w = QWidget()
             col_w.setFixedWidth(COL_W)
@@ -387,26 +428,58 @@ class DayTasksCanvas(QWidget):
                 sec_l.setContentsMargins(0, 0, 0, 0)
                 sec_l.setSpacing(6)
                 head = QHBoxLayout()
-                if tag == UNTAGGED_SECTION:
+                if tag in exec_names:
+                    lab = QLabel(tag)
+                    lab.setStyleSheet("color:#444; font-weight:600;")
+                    lab.setCursor(Qt.CursorShape.PointingHandCursor)
+                    lab.setToolTip(
+                        f"Кисть «{tag}»: клик по задаче или разделу ставит этого исполнителя"
+                    )
+                    lab.mousePressEvent = (  # type: ignore[method-assign]
+                        lambda event, name=tag: self._on_heading_press(event, "executor", name)
+                    )
+                    head.addWidget(lab, 1)
+                    self._executor_labels[tag] = lab
+                    self._section_ids[("executor", tag)] = [t.id for t in tag_tasks]
+                elif tag == UNTAGGED_SECTION:
                     lab = QLabel(section_heading(tag))
                     lab.setStyleSheet("color:#444; font-weight:600;")
+                    lab.setCursor(Qt.CursorShape.PointingHandCursor)
+                    lab.mousePressEvent = (  # type: ignore[method-assign]
+                        lambda event, name=tag: self._on_heading_press(event, "tag", name)
+                    )
                     head.addWidget(lab, 1)
+                    self._section_ids[("tag", tag)] = [t.id for t in tag_tasks]
                 else:
                     symbol = display_symbol(tag) or tag[:2]
                     circle = TagCircle(
                         tag, symbol, sec, draggable=True, reorderable=False
                     )
-                    circle.clicked.connect(self.main.on_tag_pick)
+                    circle.clicked.connect(
+                        lambda key=tag: self.main.on_section_tag_circle(key)
+                    )
                     self._day_tag_circles[tag] = circle
                     if paint_key is not None:
                         circle.set_highlighted(tag == paint_key)
                     head.addWidget(circle)
                     lab = QLabel(section_heading(tag))
                     lab.setStyleSheet("color:#444; font-weight:600;")
+                    lab.setCursor(Qt.CursorShape.PointingHandCursor)
+                    lab.mousePressEvent = (  # type: ignore[method-assign]
+                        lambda event, name=tag: self._on_heading_press(event, "tag", name)
+                    )
                     head.addWidget(lab, 1)
+                    self._section_ids[("tag", tag)] = [t.id for t in tag_tasks]
                 sec_l.addLayout(head)
                 for task in tag_tasks:
                     sec_l.addWidget(self._make_block(task))
+                if tag in exec_names:
+                    send_btn = QPushButton("Отправить в Telegram")
+                    send_btn.setToolTip(f"Список задач «{tag}» в чат PGD studio AI")
+                    send_btn.clicked.connect(
+                        lambda _checked=False, name=tag: self.main.send_executor_list(name)
+                    )
+                    sec_l.addWidget(send_btn)
                 col_l.addWidget(sec, 0, Qt.AlignmentFlag.AlignTop)
                 col_l.addStretch(1)
             self.day_layout.addWidget(col_w, 0, Qt.AlignmentFlag.AlignTop)
@@ -416,6 +489,8 @@ class DayTasksCanvas(QWidget):
         self.tag_bar.set_active_filter(self.main.filter_tag)
         if paint_key is not None:
             self.tag_bar.set_highlight(paint_key)
+        if exec_paint is not None:
+            self.set_executor_highlight(exec_paint)
 
         pm = getattr(self.main, "paint_mode", None)
         if pm and pm[0] == "priority":
@@ -455,6 +530,8 @@ class DayTasksCanvas(QWidget):
             source="app",
             before_state=before_state,
         )
+        if hasattr(self.main, "_note_task_change"):
+            self.main._note_task_change(task, before=before_state)
         self.main._last_paint_key = None
         self._clear_blocks()
         self.main.reload_boards()

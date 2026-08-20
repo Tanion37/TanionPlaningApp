@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+import uuid
 
 from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
@@ -27,18 +28,28 @@ from .activity_log import (
     apply_state_to_task,
     find_redo_target,
     find_undo_target,
+    find_redo_targets,
+    find_undo_targets,
     format_task_snapshot,
     snapshot_dict,
     task_from_state,
 )
-from .day_tasks import apply_priority_section, move_actual_to_inbox, refresh_inbox_tags
+from .create_presets import PRESET_DONE, PRESET_INBOX, apply_preset_to_new_task_data
+from .day_hide import hide_task as hide_task_on_day
+from .day_tasks import (
+    apply_inbox_to_task,
+    apply_priority_section,
+    refresh_inbox_tags,
+)
 from .day_tasks_board import DayTasksCanvas
+from .executors_store import DEFAULT_EXECUTOR, ExecutorsStore
 from .layout_metrics import content_left, content_right
 from .lists_board import ListsCanvas
 from .lists_store import ListsStore
 from .logs_board import LogsCanvas
 from .models import Task
-from .period_roll import roll_periodic_dates
+from .notion_sync import NotionSyncManager
+from .period_roll import spawn_periodic_copies
 from .sorting import SCREENS, TRIAGE_COLUMNS, apply_task_to_triage_column
 from .tags import (
     ACTUAL_TAG,
@@ -46,14 +57,19 @@ from .tags import (
     BACKLOG_TAG,
     BY_KEY,
     CANCEL_TAG,
+    CONTROL_TAG,
+    DONE_CHECK_ACTION,
     DONE_TAG,
     IMPORTANT_TAG,
     INBOX_TAG,
+    SOCIAL_TAG,
+    SPECIAL_ACTION_KEYS,
     TODAY_ACTION,
     TOMORROW_ACTION,
     URGENT_TAG,
     WEEK_ACTION,
     canonicalize_tag_key,
+    clear_actual_tag,
 )
 from .widgets import (
     CIRCLE,
@@ -372,6 +388,7 @@ class BoardCanvas(QWidget):
         # (title, x_left, x_right) for triage drop hit-test
         self._column_bounds: list[tuple[str, int, int]] = []
         self._gorit_task_ids: set[str] = set()
+        self._column_task_ids: dict[str, list[str]] = {}
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -440,12 +457,21 @@ class BoardCanvas(QWidget):
             columns = [(display, tasks_pool)]
             center_titles = True
             use_scroll = False
+        elif self.screen_id == "backlog":
+            from .sorting import screen_backlog
+
+            columns = screen_backlog(tasks_all)
+            center_titles = False
+            use_scroll = True
         else:
             layout_fn = next(fn for sid, _title, fn in SCREENS if sid == self.screen_id)
             columns = layout_fn(tasks_all)
             center_titles = self.screen_id == "projects"
             use_scroll = self.screen_id == "triage"
 
+        self._column_task_ids = {
+            title: [t.id for t in lst] for title, lst in columns
+        }
         col_gap = 20 if self.screen_id == "triage" else 24
         top = 48
         usable_h = max(100, self.height() - self.tag_bar.height() - top - 16)
@@ -709,10 +735,25 @@ class BoardCanvas(QWidget):
     def _on_tag_drop(self, task_id: str, tag_key: str) -> None:
         self.main.apply_action_to_task(task_id, tag_key)
 
+    def _column_title_at(self, x: int) -> str | None:
+        for title, left, right in self._column_bounds:
+            if left <= x < right:
+                return title
+        for title, tx, _centered in self._column_titles:
+            if tx <= x < tx + TASK_W + 24:
+                return title
+        return None
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
             return
         pos = event.position().toPoint()
+        if pos.y() <= 40 and getattr(self.main, "paint_mode", None):
+            title = self._column_title_at(pos.x())
+            if title:
+                ids = self._column_task_ids.get(title) or []
+                if self.main._apply_current_brush_to_ids(ids):
+                    return
         child = self.childAt(pos)
 
         if self.main.place_label_mode:
@@ -772,6 +813,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = store
         self.lists_store = ListsStore(store.path)
+        self.executors_store = ExecutorsStore(store.path)
+        self.executors_store.load()
         self.annotations = annotations or AnnotationStore.load()
         self.filter_tag: str | None = None
         self.filter_project: str | None = None
@@ -819,11 +862,14 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.boards: list[BoardCanvas] = []
-        # Логи → Списки → Задачи дня → triage…
+        # Логи → Бэклог → Списки → Задачи дня → triage…
         self.logs_board = LogsCanvas(self)
         self.logs_board.swipe_callback = self._on_swipe
         self.stack.addWidget(self.logs_board)
-        self.lists_board = ListsCanvas(self.lists_store, self)
+        self.backlog_board = BoardCanvas(store, "backlog", self)
+        self.backlog_board.swipe_callback = self._on_swipe
+        self.stack.addWidget(self.backlog_board)
+        self.lists_board = ListsCanvas(self.lists_store, self, self.executors_store)
         self.lists_board.swipe_callback = self._on_swipe
         self.stack.addWidget(self.lists_board)
         self.day_board = DayTasksCanvas(self)
@@ -831,6 +877,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.day_board)
         self.screen_titles: list[tuple[str, str]] = [
             ("logs", "Логи"),
+            ("backlog", "Бэклог"),
             ("lists", "Списки"),
             ("day_tasks", "Задачи дня"),
         ]
@@ -883,21 +930,21 @@ class MainWindow(QMainWindow):
         self.btn_today = TagCircle(
             TODAY_ACTION, "Сег", self.controls, draggable=True, reorderable=False
         )
-        self.btn_today.setToolTip("Сегодня: как колонка ДЕЛАЕМ (start=сегодня)")
+        self.btn_today.setToolTip("Сегодня: спрятать с экрана «Задачи дня» на 4 часа")
         self.btn_today.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_today)
 
         self.btn_tomorrow = TagCircle(
             TOMORROW_ACTION, "З", self.controls, draggable=True, reorderable=False
         )
-        self.btn_tomorrow.setToolTip("Завтра: как колонка ЗАВТРА")
+        self.btn_tomorrow.setToolTip("Завтра: кисть; по разделу — все задачи раздела")
         self.btn_tomorrow.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_tomorrow)
 
         self.btn_week = TagCircle(
             WEEK_ACTION, "Нед", self.controls, draggable=True, reorderable=False
         )
-        self.btn_week.setToolTip("Неделя: как колонка НЕДЕЛЯ (start=+7 дней)")
+        self.btn_week.setToolTip("Неделя: кисть; по разделу — все задачи раздела")
         self.btn_week.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_week)
 
@@ -905,9 +952,24 @@ class MainWindow(QMainWindow):
         self.btn_backlog = TagCircle(
             BACKLOG_TAG, backlog_symbol, self.controls, draggable=True, reorderable=False
         )
-        self.btn_backlog.setToolTip("Отложенная")
+        self.btn_backlog.setToolTip("Бэклог: кисть; по разделу — все задачи раздела")
         self.btn_backlog.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_backlog)
+
+        inbox_symbol = BY_KEY[INBOX_TAG].symbol
+        self.btn_inbox = TagCircle(
+            INBOX_TAG, inbox_symbol, self.controls, draggable=True, reorderable=False
+        )
+        self.btn_inbox.setToolTip("Во входящие: кисть; по разделу — все задачи раздела")
+        self.btn_inbox.clicked.connect(self._on_action_tool_clicked)
+        controls_layout.addWidget(self.btn_inbox)
+
+        self.btn_done_check = TagCircle(
+            DONE_CHECK_ACTION, "✅👁", self.controls, draggable=True, reorderable=False
+        )
+        self.btn_done_check.setToolTip("Сделано и проверить: выполнена + копия «Проверить …» на завтра")
+        self.btn_done_check.clicked.connect(self._on_action_tool_clicked)
+        controls_layout.addWidget(self.btn_done_check)
 
         answers_symbol = BY_KEY[ANSWERS_TAG].symbol
         self.btn_answers = TagCircle(
@@ -927,13 +989,6 @@ class MainWindow(QMainWindow):
         self.btn_rect.clicked.connect(self._toggle_draw_rect)
         controls_layout.addWidget(self.btn_rect)
 
-        inbox_symbol = BY_KEY[INBOX_TAG].symbol
-        self.btn_all_inbox = CircleButton(inbox_symbol)
-        self.btn_all_inbox.setToolTip("Всё во входящие")
-        self.btn_all_inbox.clicked.connect(self._on_all_to_inbox)
-        controls_layout.addWidget(self.btn_all_inbox)
-        self.btn_all_inbox.hide()
-
         self._action_circles = (
             self.btn_done_dup,
             self.btn_cancel_dup,
@@ -941,6 +996,8 @@ class MainWindow(QMainWindow):
             self.btn_tomorrow,
             self.btn_week,
             self.btn_backlog,
+            self.btn_inbox,
+            self.btn_done_check,
             self.btn_answers,
         )
         self.controls.show()
@@ -967,18 +1024,102 @@ class MainWindow(QMainWindow):
         if not self.demo_mode:
             refresh_inbox_tags(self.store.tasks)
             self.store.save()
-        day_index = 2
+        day_index = 3
         self.stack.setCurrentIndex(day_index)
         self._update_screen_label(day_index)
         self.reload_boards()
         self._place_floating_controls()
+
+        self.notion_sync = NotionSyncManager(
+            self.store,
+            on_applied=self._on_notion_applied,
+            on_conflicts=self._on_notion_conflicts,
+            parent_timer_host=self,
+        )
+        QTimer.singleShot(1500, self.notion_sync.sync_now)
+        self.lists_store.on_change = self._note_lists_change
+        self._periodic_timer = QTimer(self)
+        self._periodic_timer.setInterval(30 * 60 * 1000)
+        self._periodic_timer.timeout.connect(self.reload_boards)
+        self._periodic_timer.start()
+
+    def _executor_names(self) -> list[str]:
+        self.executors_store.load()
+        return list(self.executors_store.names)
+
+    def _note_task_change(
+        self,
+        task,
+        *,
+        before: dict | None = None,
+        action: str = "upsert",
+    ) -> None:
+        sync = getattr(self, "notion_sync", None)
+        if sync is None:
+            return
+        sync.notify_local_change(task, action=action, before=before)
+
+    def _note_lists_change(self) -> None:
+        sync = getattr(self, "notion_sync", None)
+        if sync is None:
+            return
+        sync.notify_lists_change()
+
+    def _on_notion_applied(self) -> None:
+        self.reload_boards()
+
+    def _on_notion_conflicts(self, conflicts: list) -> None:
+        if not conflicts:
+            return
+        for item in conflicts[:12]:
+            tid = item.get("task_id") or ""
+            title = item.get("title") or tid
+            fields = ", ".join(item.get("fields") or [])
+            msg = (
+                f"Расхождение по задаче «{title}» (#{tid}).\n"
+                f"Поля: {fields}\n\n"
+                f"Локально: {item.get('local')}\n"
+                f"Notion: {item.get('remote')}\n\n"
+                "Да = взять локальное, Нет = взять Notion, Отмена = пропустить."
+            )
+            box = QMessageBox(self)
+            box.setWindowTitle("Сверка с Notion")
+            box.setText(msg)
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel
+            )
+            box.button(QMessageBox.StandardButton.Yes).setText("Локальное")
+            box.button(QMessageBox.StandardButton.No).setText("Notion")
+            box.button(QMessageBox.StandardButton.Cancel).setText("Пропустить")
+            reply = box.exec()
+            if reply == QMessageBox.StandardButton.Yes:
+                self.notion_sync.resolve_conflict(tid, prefer="local")
+            elif reply == QMessageBox.StandardButton.No:
+                self.notion_sync.resolve_conflict(tid, prefer="remote")
+        self.reload_boards()
 
     def reload(self) -> None:
         self.store.load()
         self.reload_boards()
 
     def reload_boards(self) -> None:
+        if not self.demo_mode:
+            created = spawn_periodic_copies(self.store)
+            if created:
+                self.store.save()
+                for task in created:
+                    append_log(
+                        "created",
+                        task,
+                        source="app",
+                        detail="периодичность",
+                        before_state=None,
+                    )
+                    self._note_task_change(task, action="upsert")
         self.logs_board.rebuild()
+        self.backlog_board.rebuild()
         self.lists_board.rebuild()
         self.day_board.rebuild()
         for board in self.boards:
@@ -1000,21 +1141,31 @@ class MainWindow(QMainWindow):
             self.logs_board.rebuild()
             return
         if index == 1:
-            self.lists_board.rebuild()
+            self.backlog_board.rebuild()
             return
         if index == 2:
+            self.lists_board.rebuild()
+            return
+        if index == 3:
             self.day_board.rebuild()
             return
-        board_idx = index - 3
+        board_idx = index - 4
         if 0 <= board_idx < len(self.boards):
             self.boards[board_idx].rebuild()
 
     def _is_day_screen(self) -> bool:
-        return self.stack.currentIndex() == 2
+        return self.stack.currentIndex() == 3
 
     def _sync_day_controls_visibility(self) -> None:
         on_day = self._is_day_screen()
-        self.btn_all_inbox.setVisible(on_day)
+        self.btn_answers.setVisible(not on_day)
+        self.btn_label.setVisible(not on_day)
+        self.btn_rect.setVisible(not on_day)
+        if on_day:
+            self.place_label_mode = False
+            self.draw_rect_mode = False
+            self.btn_label.set_active(False)
+            self.btn_rect.set_active(False)
         if not on_day and self._controls_on_left:
             self._controls_on_left = False
             self._place_floating_controls()
@@ -1078,17 +1229,22 @@ class MainWindow(QMainWindow):
             board.tag_bar.set_highlight(None)
         self.day_board.set_tag_highlight(None)
         self.day_board.set_priority_highlight(None)
+        self.day_board.set_executor_highlight(None)
         QApplication.restoreOverrideCursor()
         self.unsetCursor()
 
+    def on_section_tag_circle(self, tag_key: str) -> None:
+        """Кружок тега в заголовке раздела Дня: кисть красит раздел, иначе берёт тег."""
+        look = canonicalize_tag_key(tag_key) if tag_key not in SPECIAL_ACTION_KEYS else tag_key
+        ids = self.day_board.section_task_ids("tag", look or tag_key)
+        if self._apply_current_brush_to_ids(ids):
+            return
+        self.on_tag_pick(tag_key)
+
     def on_tag_pick(self, tag_key: str) -> None:
-        """Клик по тегу: взять «кисть» или сбросить при повторном клике."""
-        key = canonicalize_tag_key(tag_key) if tag_key not in (
-            TODAY_ACTION,
-            TOMORROW_ACTION,
-            WEEK_ACTION,
-        ) else tag_key
-        if not key and tag_key not in (TODAY_ACTION, TOMORROW_ACTION, WEEK_ACTION):
+        """Клик по кружку тега внизу/сбоку: взять кисть, не красить раздел."""
+        key = canonicalize_tag_key(tag_key) if tag_key not in SPECIAL_ACTION_KEYS else tag_key
+        if not key and tag_key not in SPECIAL_ACTION_KEYS:
             # для обычных тегов
             key = tag_key
         if self.paint_mode == ("tag", key):
@@ -1097,6 +1253,7 @@ class MainWindow(QMainWindow):
         self.paint_mode = ("tag", key)
         self.set_action_highlight(None)
         self.day_board.set_priority_highlight(None)
+        self.day_board.set_executor_highlight(None)
         for board in self.boards:
             board.tag_bar.set_highlight(key)
         self.day_board.set_tag_highlight(key)
@@ -1106,6 +1263,9 @@ class MainWindow(QMainWindow):
 
     def on_priority_pick(self, section: str) -> None:
         """Клик по заголовку Горит/Нужно/Можно: кисть как drop в раздел."""
+        ids = self.day_board.section_task_ids("priority", section)
+        if self._apply_current_brush_to_ids(ids):
+            return
         if self.paint_mode == ("priority", section):
             self.clear_paint_mode()
             return
@@ -1114,13 +1274,14 @@ class MainWindow(QMainWindow):
         for board in self.boards:
             board.tag_bar.set_highlight(None)
         self.day_board.set_tag_highlight(None)
+        self.day_board.set_executor_highlight(None)
         self.day_board.set_priority_highlight(section)
         QApplication.restoreOverrideCursor()
         QApplication.setOverrideCursor(Qt.CursorShape.PointingHandCursor)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _on_action_tool_clicked(self, action_key: str) -> None:
-        """Кнопка-действие: кисть; повторный клик по кнопке только снимает режим."""
+        """Боковой кружок: взять кисть, не красить раздел."""
         if self.paint_mode == ("action", action_key):
             self.clear_paint_mode()
             return
@@ -1130,8 +1291,169 @@ class MainWindow(QMainWindow):
             board.tag_bar.set_highlight(None)
         self.day_board.set_tag_highlight(None)
         self.day_board.set_priority_highlight(None)
+        self.day_board.set_executor_highlight(None)
         QApplication.restoreOverrideCursor()
         QApplication.setOverrideCursor(Qt.CursorShape.PointingHandCursor)
+
+    def on_executor_pick(self, name: str) -> None:
+        """Клик по разделу исполнителя: кисть «этот исполнитель»."""
+        who = (name or "").strip()
+        if not who:
+            return
+        ids = self.day_board.section_task_ids("executor", who)
+        if self.paint_mode and self.paint_mode[0] != "executor":
+            if self._apply_current_brush_to_ids(ids):
+                return
+        if self.paint_mode == ("executor", who):
+            self.clear_paint_mode()
+            return
+        self.paint_mode = ("executor", who)
+        self.set_action_highlight(None)
+        for board in self.boards:
+            board.tag_bar.set_highlight(None)
+        self.day_board.set_tag_highlight(None)
+        self.day_board.set_priority_highlight(None)
+        self.day_board.set_executor_highlight(who)
+        QApplication.restoreOverrideCursor()
+        QApplication.setOverrideCursor(Qt.CursorShape.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def section_brush_key(self) -> str | None:
+        """Ключ кисти кнопки/тега для покраски раздела (не исполнитель)."""
+        pm = self.paint_mode
+        if not pm:
+            return None
+        if pm[0] in {"action", "tag"}:
+            return pm[1]
+        return None
+
+    def _apply_current_brush_to_ids(self, ids: list[str]) -> bool:
+        """Покрасить список задач текущей кистью. False, если кисти нет."""
+        pm = self.paint_mode
+        if not pm or not ids:
+            return False
+        kind, key = pm
+        if kind == "executor":
+            self.apply_executor_to_tasks(ids, key, mass=True)
+            return True
+        if kind == "priority":
+            from .day_tasks import apply_priority_section
+
+            batch = str(uuid.uuid4())
+            changed = False
+            for tid in ids:
+                task = (
+                    next((t for t in self.demo_tasks if t.id == tid), None)
+                    if self.demo_mode
+                    else self.store.get(tid)
+                )
+                if not task:
+                    continue
+                before_state = snapshot_dict(task)
+                before_text = format_task_snapshot(task)
+                apply_priority_section(task, key)
+                if snapshot_dict(task) == before_state:
+                    continue
+                changed = True
+                if not self.demo_mode:
+                    self._log_action_result(task, key, before_text, before_state, batch=batch)
+                    self._note_task_change(task, before=before_state)
+            if changed and not self.demo_mode:
+                self.store.save()
+            if changed:
+                self._last_paint_key = None
+                self.reload_boards()
+                self._sync_history_buttons()
+            return True
+        if kind in {"action", "tag"}:
+            self.apply_brush_to_tasks(ids, key, mass=True)
+            return True
+        return False
+
+    def apply_brush_to_tasks(
+        self, task_ids: list[str], action_key: str, *, mass: bool = False
+    ) -> None:
+        ids = [tid for tid in task_ids if tid]
+        if not ids:
+            return
+        batch = str(uuid.uuid4()) if mass else None
+        changed = False
+        for tid in ids:
+            if self.demo_mode:
+                task = next((t for t in self.demo_tasks if t.id == tid), None)
+            else:
+                task = self.store.get(tid)
+            if not task:
+                continue
+            before_state = snapshot_dict(task)
+            before_text = format_task_snapshot(task)
+            self._apply_action(task, action_key)
+            if action_key != TODAY_ACTION and snapshot_dict(task) == before_state:
+                continue
+            changed = True
+            if not self.demo_mode:
+                self._log_action_result(
+                    task, action_key, before_text, before_state, batch=batch
+                )
+                self._note_task_change(task, before=before_state)
+        if changed and not self.demo_mode:
+            self.store.save()
+        if changed:
+            self._last_paint_key = None
+            self.reload_boards()
+            self._sync_history_buttons()
+
+    def apply_executor_to_tasks(
+        self, task_ids: list[str], executor: str, *, mass: bool = False
+    ) -> None:
+        name = (executor or "").strip()
+        if not name:
+            return
+        ids = [tid for tid in task_ids if tid]
+        if not ids:
+            return
+        batch = str(uuid.uuid4()) if mass else None
+        changed = False
+        for tid in ids:
+            if self.demo_mode:
+                task = next((t for t in self.demo_tasks if t.id == tid), None)
+            else:
+                task = self.store.get(tid)
+            if not task:
+                continue
+            old = (getattr(task, "executor", "") or "").strip()
+            if old == name:
+                continue
+            before_state = snapshot_dict(task)
+            before_text = format_task_snapshot(task)
+            task.executor = name
+            changed = True
+            if not self.demo_mode:
+                append_log(
+                    "changed",
+                    task,
+                    before=before_text,
+                    detail=f"исполнитель {name}",
+                    source="app",
+                    before_state=before_state,
+                    batch=batch,
+                )
+                self._note_task_change(task, before=before_state)
+        if changed and not self.demo_mode:
+            self.store.save()
+        if changed:
+            self._last_paint_key = None
+            self.reload_boards()
+            self._sync_history_buttons()
+
+    def on_day_section_click(self, kind: str, name: str) -> None:
+        ids = self.day_board.section_task_ids(kind, name)
+        if self.paint_mode and not (kind == "executor" and self.paint_mode[0] == "executor"):
+            if self._apply_current_brush_to_ids(ids):
+                return
+        if kind == "executor":
+            self.on_executor_pick(name)
+            return
 
     def _snapshot_task(self, task: Task) -> dict:
         return snapshot_dict(task)
@@ -1150,10 +1472,17 @@ class MainWindow(QMainWindow):
     def history_undo(self) -> None:
         if self.demo_mode:
             return
-        target = find_undo_target()
-        if not target:
+        targets = find_undo_targets()
+        if not targets:
             self._sync_history_buttons()
             return
+        for target in targets:
+            self._undo_one(target)
+        self.store.save()
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def _undo_one(self, target) -> None:
         tid = (target.task_id or "").strip()
         current = self.store.get(tid) if tid else None
         current_snap = snapshot_dict(current) if current else None
@@ -1161,7 +1490,6 @@ class MainWindow(QMainWindow):
         if target.action == "created":
             if tid:
                 self.store.remove_task(tid)
-            after_gone = None
             append_log(
                 "changed",
                 task_id=tid,
@@ -1173,52 +1501,50 @@ class MainWindow(QMainWindow):
                 after_state=None,
                 undoes_ts=target.ts_key,
             )
+            return
+        if not target.before_state:
+            return
+        if current is None:
+            restored = task_from_state(target.before_state)
+            if restored.id:
+                self.store.insert_task(restored)
+                current = restored
         else:
-            if not target.before_state:
-                self._sync_history_buttons()
-                return
-            if current is None:
-                # задача пропала — восстановить из before? undo means go to before
-                restored = task_from_state(target.before_state)
-                if restored.id:
-                    self.store.insert_task(restored)
-                    current = restored
-            else:
-                self._restore_task(current, target.before_state)
-                self.store.save()
-            append_log(
-                "changed",
-                current,
-                before=format_task_snapshot(task_from_state(target.after_state))
-                if target.after_state
-                else (target.after or ""),
-                detail="undo",
-                source="app",
-                before_state=target.after_state or current_snap,
-                after_state=target.before_state,
-                undoes_ts=target.ts_key,
-            )
-        self.reload_boards()
-        self._sync_history_buttons()
+            self._restore_task(current, target.before_state)
+        append_log(
+            "changed",
+            current,
+            before=format_task_snapshot(task_from_state(target.after_state))
+            if target.after_state
+            else (target.after or ""),
+            detail="undo",
+            source="app",
+            before_state=target.after_state or current_snap,
+            after_state=target.before_state,
+            undoes_ts=target.ts_key,
+        )
 
     def history_redo(self) -> None:
         if self.demo_mode:
             return
-        undo_entry = find_redo_target()
-        if not undo_entry:
+        targets = find_redo_targets()
+        if not targets:
             self._sync_history_buttons()
             return
+        for undo_entry in targets:
+            self._redo_one(undo_entry)
+        self.store.save()
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def _redo_one(self, undo_entry) -> None:
         tid = (undo_entry.task_id or "").strip()
         # undo_entry.before_state = состояние после исходного действия
         # undo_entry.after_state = состояние до исходного (куда откатили)
         forward = undo_entry.before_state
-        if forward is None and undo_entry.action == "created":
-            # не должно случиться для create-undo; before_state хранит созданную задачу
-            forward = undo_entry.before_state
         current = self.store.get(tid) if tid else None
 
         if forward is None and tid and current is not None:
-            # redo удаления после undo create: снова удалить
             before_snap = snapshot_dict(current)
             self.store.remove_task(tid)
             append_log(
@@ -1232,32 +1558,31 @@ class MainWindow(QMainWindow):
                 after_state=None,
                 undoes_ts=undo_entry.undoes_ts,
             )
-        elif forward is not None:
-            restored = task_from_state(forward)
-            if not restored.id and tid:
-                restored.id = tid
-            if self.store.get(restored.id) is None:
-                self.store.insert_task(restored)
-                current = restored
-            else:
-                current = self.store.get(restored.id)
-                assert current is not None
-                self._restore_task(current, forward)
-                self.store.save()
-            append_log(
-                "changed",
-                current,
-                before=format_task_snapshot(task_from_state(undo_entry.after_state))
-                if undo_entry.after_state
-                else (undo_entry.after or ""),
-                detail="redo",
-                source="app",
-                before_state=undo_entry.after_state,
-                after_state=forward,
-                undoes_ts=undo_entry.undoes_ts,
-            )
-        self.reload_boards()
-        self._sync_history_buttons()
+            return
+        if forward is None:
+            return
+        restored = task_from_state(forward)
+        if not restored.id and tid:
+            restored.id = tid
+        if self.store.get(restored.id) is None:
+            self.store.insert_task(restored)
+            current = restored
+        else:
+            current = self.store.get(restored.id)
+            assert current is not None
+            self._restore_task(current, forward)
+        append_log(
+            "changed",
+            current,
+            before=format_task_snapshot(task_from_state(undo_entry.after_state))
+            if undo_entry.after_state
+            else (undo_entry.after or ""),
+            detail="redo",
+            source="app",
+            before_state=undo_entry.after_state,
+            after_state=forward,
+            undoes_ts=undo_entry.undoes_ts,
+        )
 
     def _undo_last_paint(self) -> None:
         self.history_undo()
@@ -1321,6 +1646,7 @@ class MainWindow(QMainWindow):
                     source="app",
                     before_state=before_state,
                 )
+                self._note_task_change(task, before=before_state)
                 self._last_paint_key = (task_id, key)
             self.reload_boards()
             self._sync_history_buttons()
@@ -1337,6 +1663,27 @@ class MainWindow(QMainWindow):
                     source="app",
                     before_state=before_state,
                 )
+                self._note_task_change(task, before=before_state)
+                self._last_paint_key = (task_id, key)
+            self.reload_boards()
+            self._sync_history_buttons()
+            return
+        if kind == "executor":
+            old = (getattr(task, "executor", "") or "").strip()
+            if old == key:
+                return
+            task.executor = key
+            if not self.demo_mode:
+                self.store.save()
+                append_log(
+                    "changed",
+                    task,
+                    before=before_text,
+                    detail=f"исполнитель {key}",
+                    source="app",
+                    before_state=before_state,
+                )
+                self._note_task_change(task, before=before_state)
                 self._last_paint_key = (task_id, key)
             self.reload_boards()
             self._sync_history_buttons()
@@ -1346,6 +1693,7 @@ class MainWindow(QMainWindow):
         if not self.demo_mode:
             self.store.save()
             self._log_action_result(task, key, before_text, before_state)
+            self._note_task_change(task, before=before_state)
             self._last_paint_key = (task_id, key)
         self.reload_boards()
         self._sync_history_buttons()
@@ -1401,13 +1749,15 @@ class MainWindow(QMainWindow):
         before_due = task.due_at
         before_remind = task.remind_at
         self._apply_action(task, action_key)
-        if (
-            task.tags != before_tags
+        changed = (
+            action_key in (TODAY_ACTION, DONE_CHECK_ACTION)
+            or task.tags != before_tags
             or task.completed_at != before_completed
             or task.start_at != before_start
             or task.due_at != before_due
             or task.remind_at != before_remind
-        ):
+        )
+        if changed:
             self.store.save()
             self._log_action_result(task, action_key, before_snap, before_state)
             self._last_paint_key = None
@@ -1420,23 +1770,25 @@ class MainWindow(QMainWindow):
         action_key: str,
         before: str,
         before_state: dict | None = None,
+        *,
+        batch: str | None = None,
     ) -> None:
-        key = canonicalize_tag_key(action_key) if action_key not in (
-            TODAY_ACTION,
-            TOMORROW_ACTION,
-            WEEK_ACTION,
-        ) else action_key
-        kwargs = {"before": before, "source": "app", "before_state": before_state}
-        if key == DONE_TAG:
+        key = canonicalize_tag_key(action_key) if action_key not in SPECIAL_ACTION_KEYS else action_key
+        kwargs = {"before": before, "source": "app", "before_state": before_state, "batch": batch}
+        if key == DONE_TAG or key == DONE_CHECK_ACTION:
             append_log("completed", task, **kwargs)
         elif key == CANCEL_TAG:
             append_log("cancelled", task, **kwargs)
         elif key == TODAY_ACTION:
-            append_log("moved", task, detail="ДЕЛАЕМ", **kwargs)
+            append_log("moved", task, detail="скрыта на 4 часа", **kwargs)
         elif key == TOMORROW_ACTION:
             append_log("moved", task, detail="ЗАВТРА", **kwargs)
         elif key == WEEK_ACTION:
             append_log("moved", task, detail="НЕДЕЛЯ", **kwargs)
+        elif key == INBOX_TAG:
+            append_log("moved", task, detail="ВХОДЯЩИЕ", **kwargs)
+        elif key == BACKLOG_TAG:
+            append_log("moved", task, detail="БЭКЛОГ", **kwargs)
         else:
             append_log(
                 "changed",
@@ -1448,15 +1800,46 @@ class MainWindow(QMainWindow):
     def _apply_action(self, task: Task, action_key: str) -> None:
         key = action_key
         if key == TODAY_ACTION:
-            move_task_to_today(task)
+            if not self.demo_mode:
+                hide_task_on_day(task.id, hours=4)
+        elif key == DONE_CHECK_ACTION:
+            apply_status_tag(task, DONE_TAG)
+            clear_actual_tag(task)
+            if not self.demo_mode:
+                self._spawn_verify_task(task)
         elif key == TOMORROW_ACTION:
             move_task_to_tomorrow(task)
         elif key == WEEK_ACTION:
             move_task_by_week(task)
+        elif key == INBOX_TAG:
+            apply_inbox_to_task(task)
         elif key == ANSWERS_TAG:
             apply_answers_tag(task)
         else:
             apply_status_tag(task, key)
+
+    def _spawn_verify_task(self, source: Task) -> None:
+        tags = [
+            t
+            for t in source.tags
+            if t not in {DONE_TAG, CANCEL_TAG, ACTUAL_TAG}
+        ]
+        title = (source.title or "").strip()
+        if not title.casefold().startswith("проверить "):
+            title = f"Проверить {title}"
+        tomorrow = date.today() + timedelta(days=1)
+        new = self.store.add_task(
+            title=title,
+            created_at=date.today(),
+            start_at=tomorrow,
+            tags=tags,
+            project=source.project,
+            executor=source.executor or DEFAULT_EXECUTOR,
+            description=source.description,
+            author=source.author,
+        )
+        append_log("created", new, source="app", before_state=None)
+        self._note_task_change(new, action="upsert")
 
     def on_task_clicked(self, task_id: str) -> None:
         if self.paint_mode:
@@ -1469,7 +1852,7 @@ class MainWindow(QMainWindow):
         self.selected_ann_id = ann_id or None
         self.selected_task_id = None
         idx = self.stack.currentIndex()
-        board_idx = idx - 3
+        board_idx = idx - 4
         if board_idx < 0 or board_idx >= len(self.boards):
             return
         board = self.boards[board_idx]
@@ -1511,9 +1894,36 @@ class MainWindow(QMainWindow):
         return list(self.store.tasks)
 
     def _project_names(self) -> list[str]:
+        from .projects import project_key
         from .tag_order import projects_by_usage_frequency
 
-        return projects_by_usage_frequency(self.visible_tasks())
+        names = projects_by_usage_frequency(self.visible_tasks())
+        return [n for n in names if project_key(n) != SOCIAL_TAG]
+
+    def send_executor_list(self, executor: str) -> None:
+        from .day_hide import without_hidden
+        from .day_tasks import executor_sections
+        from .studio_notify import send_executor_tasks
+
+        if self.demo_mode:
+            QMessageBox.information(self, "ДЕМО", "В демо-режиме отправка в Telegram отключена.")
+            return
+        tasks = without_hidden(self.visible_tasks())
+        found: list[Task] = []
+        for name, lst in executor_sections(tasks):
+            if name == executor:
+                found = lst
+                break
+        try:
+            send_executor_tasks(executor, found)
+        except Exception as exc:  # noqa: BLE001 — показать текст API пользователю
+            QMessageBox.warning(self, "Telegram", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Telegram",
+            f"Список «{executor}» отправлен в чат PGD studio AI.",
+        )
 
     def cancel_draw_modes(self) -> None:
         self.place_label_mode = False
@@ -1533,26 +1943,8 @@ class MainWindow(QMainWindow):
         self.draw_rect_mode = not self.draw_rect_mode
         self.btn_rect.set_active(self.draw_rect_mode)
 
-    def _on_all_to_inbox(self) -> None:
-        if self.demo_mode:
-            n = move_actual_to_inbox(self.demo_tasks)
-            self.reload_boards()
-            QMessageBox.information(self, "Входящие", f"Перемещено: {n}")
-            return
-        n = move_actual_to_inbox(self.store.tasks)
-        if n:
-            self.store.save()
-            append_log(
-                "moved",
-                None,
-                detail=f"всё во входящие ({n})",
-                source="app",
-                task_id="",
-            )
-        self.reload_boards()
-
     def begin_label_at(self, screen_id: str, pos: QPoint) -> None:
-        board_idx = self.stack.currentIndex() - 3
+        board_idx = self.stack.currentIndex() - 4
         if board_idx < 0 or board_idx >= len(self.boards):
             return
         board = self.boards[board_idx]
@@ -1715,6 +2107,7 @@ class MainWindow(QMainWindow):
         dlg_kwargs: dict = {
             "project_names": self._project_names(),
             "all_tasks": self.visible_tasks(),
+            "executor_names": self._executor_names(),
         }
         if day_screen:
             dlg_kwargs["default_start"] = date.today()
@@ -1726,16 +2119,23 @@ class MainWindow(QMainWindow):
         if not data:
             QMessageBox.warning(self, "Ошибка", "Название обязательно.")
             return
+        data["executor"] = (data.get("executor") or "").strip() or DEFAULT_EXECUTOR
         if x is not None and y is not None:
             data["pos_x"] = x
             data["pos_y"] = y
+        preset = data.pop("create_preset", None) or dlg.create_preset()
         tags = [canonicalize_tag_key(t) for t in data.get("tags") or []]
         tags = [t for t in tags if t]
-        if day_screen:
-            data["start_at"] = date.today()
-            if INBOX_TAG not in tags:
-                tags.insert(0, INBOX_TAG)
         data["tags"] = list(dict.fromkeys(tags))
+        if day_screen and not preset:
+            data["start_at"] = date.today()
+            if INBOX_TAG not in data["tags"]:
+                data["tags"].insert(0, INBOX_TAG)
+        elif day_screen and preset == PRESET_INBOX:
+            data["start_at"] = date.today()
+        data = apply_preset_to_new_task_data(data, preset)
+        if preset and preset != PRESET_INBOX:
+            data["tags"] = [t for t in data["tags"] if t != INBOX_TAG]
         task = self.store.add_task(**data)
         if task.is_done() and task.completed_at is None:
             task.completed_at = date.today()
@@ -1743,8 +2143,8 @@ class MainWindow(QMainWindow):
         append_log("created", task, source="app", before_state=None)
         if task.is_done():
             before_done = snapshot_dict(task)
-            # completed сразу после create — before = без done? уже done; логируем как completed
             append_log("completed", task, source="app", before_state=before_done)
+        self._note_task_change(task, action="upsert")
         self._last_paint_key = None
         self.reload()
         self._sync_history_buttons()
@@ -1761,6 +2161,7 @@ class MainWindow(QMainWindow):
             self,
             project_names=self._project_names(),
             all_tasks=self.visible_tasks(),
+            executor_names=self._executor_names(),
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
@@ -1768,6 +2169,10 @@ class MainWindow(QMainWindow):
         if not data:
             QMessageBox.warning(self, "Ошибка", "Название обязательно.")
             return
+        preset = data.pop("create_preset", None)
+        data = apply_preset_to_new_task_data(data, preset)
+        if preset and preset != PRESET_DONE and DONE_TAG not in (data.get("tags") or []):
+            data["completed_at"] = None
         before = format_task_snapshot(task)
         before_state = snapshot_dict(task)
         was_done = task.is_done()
@@ -1780,6 +2185,7 @@ class MainWindow(QMainWindow):
         task.project = resolve_project_name(data["project"], self.store.tasks)
         task.description = data["description"]
         task.author = data["author"]
+        task.executor = str(data.get("executor") or "").strip()
         task.created_at = data["created_at"]
         task.completed_at = data["completed_at"]
         new_start = data["start_at"]
@@ -1790,6 +2196,9 @@ class MainWindow(QMainWindow):
         task.remind_at = data["remind_at"]
         task.remind_time = str(data.get("remind_time") or "").strip()
         task.remind_period = data["remind_period"]
+        from .period_roll import ensure_task_series
+
+        ensure_task_series(task)
         tags = [canonicalize_tag_key(t) for t in data["tags"]]
         if new_start != old_start:
             tags = [t for t in tags if t and t != INBOX_TAG and t != "входящие"]
@@ -1840,6 +2249,7 @@ class MainWindow(QMainWindow):
                     source="app",
                     before_state=before_state,
                 )
+        self._note_task_change(task, before=before_state, action="upsert")
         self._last_paint_key = None
         self.reload_boards()
         self._sync_history_buttons()
@@ -1887,8 +2297,6 @@ def run_app(xlsx_path: Path | None = None) -> int:
     load_order(root)
     store = TaskStore(xlsx_path)
     store.load()
-    if roll_periodic_dates(store.tasks):
-        store.save()
     annotations = AnnotationStore.load(root)
     window = MainWindow(store, annotations)
     window.setWindowIcon(icon)

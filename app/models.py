@@ -41,9 +41,11 @@ class Task:
     start_at: date | None = None  # когда можно приступать
     due_at: date | None = None  # когда надо закончить
     remind_at: date | None = None
-    remind_time: str = ""  # "HH:MM"
+    remind_time: str = ""  # "HH:MM" — если задано, бот шлёт в Telegram в это время
     remind_period: str = ""
+    series_id: str = ""  # id серии периодических копий
     author: str = ""
+    executor: str = ""
     project: str = ""
     description: str = ""
     tags: list[str] = field(default_factory=list)
@@ -124,7 +126,7 @@ class Task:
         return self.has_tag(ACTUAL_TAG)
 
     def is_frog(self) -> bool:
-        """«Сложная» (🐸) – бывшая лягушка."""
+        """«Сложная» (🐸) — бывшая лягушка."""
         return self.has_tag("сложная")
 
     def is_fast(self) -> bool:

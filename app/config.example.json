@@ -1,3 +1,6 @@
 {
-  "xlsx_path": "data/tasks.xlsx"
+  "xlsx_path": "data/tasks.xlsx",
+  "telegram": {
+    "note": "Бот живёт в TanionScheduler. Здесь только путь к таблице."
+  }
 }
