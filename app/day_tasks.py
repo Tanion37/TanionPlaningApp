@@ -243,7 +243,7 @@ def executor_sections(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
     return items
 
 
-TELEGRAM_PRIORITY_ORDER = ("ГОРЯЩЕЕ", "МОЖНО", "НУЖНО")
+TELEGRAM_PRIORITY_ORDER = ("ГОРЯЩЕЕ", "НУЖНО", "МОЖНО")
 TELEGRAM_PRIORITY_MARK = {
     "ГОРЯЩЕЕ": "🔴",
     "НУЖНО": "🔵",
@@ -252,7 +252,7 @@ TELEGRAM_PRIORITY_MARK = {
 
 
 def telegram_priority_label(task: Task) -> str:
-    """Те же правила, что Горит / Можно / Нужно: важно+срочно, остальные, важно."""
+    """Те же правила, что Горит / Нужно / Можно: важно+срочно, важно, остальные."""
     if task.is_important() and task.is_urgent():
         return "ГОРЯЩЕЕ"
     if task.is_important():

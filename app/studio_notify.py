@@ -153,9 +153,13 @@ def format_executor_list(executor: str, tasks: list, mention: str) -> str:
     if not tasks:
         return f"{head}\n(пусто)"
     lines = [head]
+    first = True
     for header, block in group_by_telegram_priority(tasks):
         if not block:
             continue
+        if not first:
+            lines.append("")
+        first = False
         mark = TELEGRAM_PRIORITY_MARK.get(header, "")
         lines.append(f"{mark} {header}".strip())
         for task in block:

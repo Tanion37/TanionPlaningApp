@@ -114,13 +114,17 @@ def tasks_payload(
     else:
         blocks = [("", list(tasks))]
         TELEGRAM_PRIORITY_MARK = {}
+    first_block = True
     for header, block in blocks:
         visible = [t for t in block if not (hide_done and t.is_done())]
         if header and not visible:
             continue
         if header:
+            if not first_block:
+                lines.append("")
             mark = TELEGRAM_PRIORITY_MARK.get(header, "")
             lines.append(f"{mark} {header}".strip())
+            first_block = False
         color = TELEGRAM_PRIORITY_MARK.get(header, "") if header else ""
         for task in visible:
             done = task.is_done()
