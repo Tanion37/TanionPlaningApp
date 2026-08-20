@@ -144,7 +144,7 @@ def resolve_studio_send() -> tuple[str, str]:
 
 
 def format_executor_list(executor: str, tasks: list, mention: str) -> str:
-    from .day_tasks import group_by_telegram_priority, non_system_tags_of
+    from .day_tasks import TELEGRAM_PRIORITY_MARK, group_by_telegram_priority, non_system_tags_of
     from .tags import tags_to_cell
 
     head = executor.strip() or "Исполнитель"
@@ -156,9 +156,10 @@ def format_executor_list(executor: str, tasks: list, mention: str) -> str:
     for header, block in group_by_telegram_priority(tasks):
         if not block:
             continue
-        lines.append(header)
+        mark = TELEGRAM_PRIORITY_MARK.get(header, "")
+        lines.append(f"{mark} {header}".strip())
         for task in block:
-            line = f"☐ {task.title}"
+            line = f"{mark} ☐ {task.title}".strip()
             tags = tags_to_cell(non_system_tags_of(task))
             if tags:
                 line += f"  {tags}"

@@ -108,24 +108,31 @@ def tasks_payload(
     buttons: list[list[dict]] = [[{"text": eye, "callback_data": "il:e"}]]
     shown = 0
     if group_priority:
-        from .day_tasks import group_by_telegram_priority
+        from .day_tasks import TELEGRAM_PRIORITY_MARK, group_by_telegram_priority
 
         blocks: list[tuple[str, list]] = group_by_telegram_priority(tasks)
     else:
         blocks = [("", list(tasks))]
+        TELEGRAM_PRIORITY_MARK = {}
     for header, block in blocks:
         visible = [t for t in block if not (hide_done and t.is_done())]
         if header and not visible:
             continue
         if header:
-            lines.append(header)
+            mark = TELEGRAM_PRIORITY_MARK.get(header, "")
+            lines.append(f"{mark} {header}".strip())
+        color = TELEGRAM_PRIORITY_MARK.get(header, "") if header else ""
         for task in visible:
             done = task.is_done()
             name = task.title
             short = name if len(name) <= 40 else name[:37] + "…"
-            lines.append(f"{_mark(done)} {name}")
+            prefix = f"{color} {_mark(done)}".strip() if color else _mark(done)
+            lines.append(f"{prefix} {name}")
+            btn = f"{prefix} {short}"
+            if len(btn) > 64:
+                btn = btn[:61] + "…"
             buttons.append(
-                [{"text": f"{_mark(done)} {short}", "callback_data": f"il:t:{task.id}"}]
+                [{"text": btn, "callback_data": f"il:t:{task.id}"}]
             )
             shown += 1
             if shown >= 80:

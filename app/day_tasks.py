@@ -244,6 +244,11 @@ def executor_sections(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
 
 
 TELEGRAM_PRIORITY_ORDER = ("ГОРЯЩЕЕ", "МОЖНО", "НУЖНО")
+TELEGRAM_PRIORITY_MARK = {
+    "ГОРЯЩЕЕ": "🔴",
+    "НУЖНО": "🔵",
+    "МОЖНО": "🟢",
+}
 
 
 def telegram_priority_label(task: Task) -> str:
