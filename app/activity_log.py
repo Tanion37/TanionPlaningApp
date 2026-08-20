@@ -415,26 +415,43 @@ def last_action_is_mass(
     return sum(1 for e in window if (e.batch or "").strip() == batch) >= 2
 
 
+def _mass_batch_targets(
+    entries: list[LogEntry], last: LogEntry, *, undone: set[str]
+) -> list[LogEntry]:
+    """Члены того же массового действия, что last. Иначе только last."""
+    batch = (last.batch or "").strip()
+    if not batch:
+        return [last]
+    window = _reversible_in_window(entries, last=last, undone=undone)
+    same = [e for e in window if (e.batch or "").strip() == batch]
+    if len(same) < 2:
+        return [last]
+    same.reverse()
+    return same
+
+
 def find_undo_targets(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> list[LogEntry]:
-    """Откат всех пользовательских изменений за 5 с до последнего. Автоспавн не входит."""
+    """Последнее пользовательское действие; если массовое – весь этот пакет."""
     entries = entries if entries is not None else load_recent_entries(root=root)
     last = find_undo_target(entries)
     if last is None:
         return []
     undone = compute_undone_ts(entries)
-    window = _reversible_in_window(entries, last=last, undone=undone)
-    window.reverse()
-    return window or [last]
+    return _mass_batch_targets(entries, last, undone=undone)
 
 
 def find_redo_targets(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> list[LogEntry]:
-    """Пакет redo: пользовательские undo за 5 с. Автоспавн не входит."""
+    """Повтор последнего пользовательского undo; если откатывали пакет – весь пакет."""
     entries = entries if entries is not None else load_recent_entries(root=root)
     last = find_redo_target(entries)
     if last is None:
         return []
-    undone = compute_undone_ts(entries)
     by_ts = _entries_by_ts(entries)
+    orig = by_ts.get(normalize_ts_key(last.undoes_ts))
+    undone = compute_undone_ts(entries)
+    if orig is None or not last_action_is_mass(entries, orig, undone=set()):
+        return [last]
+    batch = (orig.batch or "").strip()
     cutoff = last.ts - timedelta(seconds=MASS_UNDO_SEC)
     out: list[LogEntry] = []
     for e in reversed(entries):
@@ -445,7 +462,10 @@ def find_redo_targets(entries: list[LogEntry] | None = None, *, root: Path | Non
         if _is_spawn_undo(e, by_ts):
             continue
         ref = normalize_ts_key(e.undoes_ts)
-        if ref and ref in undone:
+        if not ref or ref not in undone:
+            continue
+        src = by_ts.get(ref)
+        if src is not None and (src.batch or "").strip() == batch:
             out.append(e)
     return out or [last]
 
