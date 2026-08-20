@@ -108,7 +108,11 @@ def tasks_payload(
     buttons: list[list[dict]] = [[{"text": eye, "callback_data": "il:e"}]]
     shown = 0
     if group_priority:
-        from .day_tasks import TELEGRAM_PRIORITY_MARK, group_by_telegram_priority
+        from .day_tasks import (
+            TELEGRAM_PRIORITY_MARK,
+            group_by_telegram_priority,
+            telegram_priority_label,
+        )
 
         blocks: list[tuple[str, list]] = group_by_telegram_priority(tasks)
     else:
@@ -125,11 +129,14 @@ def tasks_payload(
             mark = TELEGRAM_PRIORITY_MARK.get(header, "")
             lines.append(f"{mark} {header}".strip())
             first_block = False
-        color = TELEGRAM_PRIORITY_MARK.get(header, "") if header else ""
         for task in visible:
             done = task.is_done()
             name = task.title
             short = name if len(name) <= 40 else name[:37] + "…"
+            if group_priority:
+                color = TELEGRAM_PRIORITY_MARK.get(telegram_priority_label(task), "")
+            else:
+                color = TELEGRAM_PRIORITY_MARK.get(header, "") if header else ""
             prefix = f"{color} {_mark(done)}".strip() if color else _mark(done)
             lines.append(f"{prefix} {name}")
             btn = f"{prefix} {short}"
@@ -383,11 +390,13 @@ def handle_callback_query(token: str, query: dict) -> bool:
             text, markup = _refresh_named(ctx)
         else:
             title, tasks = _tasks_for_ctx(ctx)
+            grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
+            ctx["group_priority"] = grouped
             text, markup = tasks_payload(
                 title,
                 tasks,
                 hide_done=bool(ctx.get("hide_done")),
-                group_priority=ctx.get("kind") == "executor",
+                group_priority=grouped,
             )
         edit_interactive(token, chat_id, message_id, text, markup, ctx)
     except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
