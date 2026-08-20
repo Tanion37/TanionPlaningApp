@@ -15,25 +15,45 @@ def _config_paths() -> list[Path]:
 
     root = app_root()
     parent = root.parent
-    return [
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in (
         root / "config.json",
         parent / "TanionPlaning" / "config.json",
         parent / "PGDstudioBot" / "config.json",
-    ]
+    ):
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
 
 
 def _telegram_from_file(path: Path) -> dict:
+    data: dict = {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+        from .tas_secrets import load_resolved_json
+
+        data = load_resolved_json(path)
+    except Exception:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
     tg = dict(data.get("telegram") or {})
     ttb = data.get("tanion_task_bot") or {}
     if not tg.get("bot_token") and ttb.get("bot_token"):
         tg["bot_token"] = ttb["bot_token"]
     if not tg.get("chat_id") and ttb.get("chat_id"):
         tg["chat_id"] = ttb["chat_id"]
-    return tg if tg.get("bot_token") else {}
+    token = str(tg.get("bot_token") or "").strip()
+    if not token or token.startswith("secrets:"):
+        return {}
+    return tg
 
 
 def iter_telegram_cfgs() -> list[dict]:
@@ -90,15 +110,22 @@ def _chat_ids(tg: dict) -> list[str]:
 
 
 def resolve_studio_send() -> tuple[str, str]:
-    """Токен и chat_id бота, который видит «PGD studio AI». Предпочтение — секретарь."""
+    """Токен и chat_id бота, который видит «PGD studio AI»."""
     want = STUDIO_CHAT_TITLE.casefold()
     cfgs = iter_telegram_cfgs()
     if not cfgs:
         raise RuntimeError("Нет токена бота в config.json")
+    all_ids: list[str] = []
+    for tg in cfgs:
+        for chat_id in _chat_ids(tg):
+            if chat_id not in all_ids:
+                all_ids.append(chat_id)
     for tg in cfgs:
         token = str(tg.get("bot_token") or "").strip()
+        if not token:
+            continue
         seen: set[str] = set()
-        for chat_id in _chat_ids(tg):
+        for chat_id in all_ids:
             if chat_id in seen:
                 continue
             seen.add(chat_id)
@@ -112,7 +139,7 @@ def resolve_studio_send() -> tuple[str, str]:
                 return token, str(result.get("id") or chat_id)
     raise RuntimeError(
         f"Чат «{STUDIO_CHAT_TITLE}» не найден. "
-        "Секретарь туда сейчас не пущен; нужен бот, который есть в этом чате."
+        "Нужен бот, который состоит в этом чате."
     )
 
 
