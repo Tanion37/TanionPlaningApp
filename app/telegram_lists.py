@@ -96,24 +96,42 @@ def named_list_payload(col, *, hide_done: bool | None = None) -> tuple[str, dict
     return "\n".join(lines), {"inline_keyboard": buttons}
 
 
-def tasks_payload(title: str, tasks: list, *, hide_done: bool) -> tuple[str, dict]:
+def tasks_payload(
+    title: str,
+    tasks: list,
+    *,
+    hide_done: bool,
+    group_priority: bool = False,
+) -> tuple[str, dict]:
     eye = "👁 скрыть сделанное" if not hide_done else "👁 показать сделанное"
     lines = [title]
     buttons: list[list[dict]] = [[{"text": eye, "callback_data": "il:e"}]]
     shown = 0
-    for task in tasks:
-        done = task.is_done()
-        if hide_done and done:
+    if group_priority:
+        from .day_tasks import group_by_telegram_priority
+
+        blocks: list[tuple[str, list]] = group_by_telegram_priority(tasks)
+    else:
+        blocks = [("", list(tasks))]
+    for header, block in blocks:
+        visible = [t for t in block if not (hide_done and t.is_done())]
+        if header and not visible:
             continue
-        name = task.title
-        short = name if len(name) <= 40 else name[:37] + "…"
-        lines.append(f"{_mark(done)} {name}")
-        buttons.append(
-            [{"text": f"{_mark(done)} {short}", "callback_data": f"il:t:{task.id}"}]
-        )
-        shown += 1
+        if header:
+            lines.append(header)
+        for task in visible:
+            done = task.is_done()
+            name = task.title
+            short = name if len(name) <= 40 else name[:37] + "…"
+            lines.append(f"{_mark(done)} {name}")
+            buttons.append(
+                [{"text": f"{_mark(done)} {short}", "callback_data": f"il:t:{task.id}"}]
+            )
+            shown += 1
+            if shown >= 80:
+                lines.append("…")
+                break
         if shown >= 80:
-            lines.append("…")
             break
     if shown == 0:
         lines.append("(пусто)" if not tasks else "(все пункты скрыты)")
@@ -128,7 +146,8 @@ def send_tasks_interactive(
     ctx: dict,
 ) -> None:
     hide = bool(ctx.get("hide_done"))
-    text, markup = tasks_payload(title, tasks, hide_done=hide)
+    grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
+    text, markup = tasks_payload(title, tasks, hide_done=hide, group_priority=grouped)
     ctx = dict(ctx)
     ctx.setdefault("task_ids", [t.id for t in tasks])
     ctx.setdefault("hide_done", hide)
@@ -353,7 +372,12 @@ def handle_callback_query(token: str, query: dict) -> bool:
             text, markup = _refresh_named(ctx)
         else:
             title, tasks = _tasks_for_ctx(ctx)
-            text, markup = tasks_payload(title, tasks, hide_done=bool(ctx.get("hide_done")))
+            text, markup = tasks_payload(
+                title,
+                tasks,
+                hide_done=bool(ctx.get("hide_done")),
+                group_priority=ctx.get("kind") == "executor",
+            )
         edit_interactive(token, chat_id, message_id, text, markup, ctx)
     except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
         pass

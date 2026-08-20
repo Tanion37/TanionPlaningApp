@@ -144,7 +144,7 @@ def resolve_studio_send() -> tuple[str, str]:
 
 
 def format_executor_list(executor: str, tasks: list, mention: str) -> str:
-    from .day_tasks import non_system_tags_of
+    from .day_tasks import group_by_telegram_priority, non_system_tags_of
     from .tags import tags_to_cell
 
     head = executor.strip() or "Исполнитель"
@@ -153,12 +153,16 @@ def format_executor_list(executor: str, tasks: list, mention: str) -> str:
     if not tasks:
         return f"{head}\n(пусто)"
     lines = [head]
-    for task in tasks:
-        line = f"☐ {task.title}"
-        tags = tags_to_cell(non_system_tags_of(task))
-        if tags:
-            line += f"  {tags}"
-        lines.append(line)
+    for header, block in group_by_telegram_priority(tasks):
+        if not block:
+            continue
+        lines.append(header)
+        for task in block:
+            line = f"☐ {task.title}"
+            tags = tags_to_cell(non_system_tags_of(task))
+            if tags:
+                line += f"  {tags}"
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -172,7 +176,9 @@ def send_executor_tasks(executor: str, tasks: list) -> str:
     title = executor.strip() or "Исполнитель"
     if mention:
         title = f"{title} @{mention.lstrip('@')}"
-    text, markup = tasks_payload(title, tasks, hide_done=False)
+    text, markup = tasks_payload(
+        title, tasks, hide_done=False, group_priority=True
+    )
     send_interactive(
         token,
         chat_id,
@@ -183,6 +189,7 @@ def send_executor_tasks(executor: str, tasks: list) -> str:
             "executor": executor,
             "task_ids": [t.id for t in tasks],
             "hide_done": False,
+            "group_priority": True,
         },
     )
     return text

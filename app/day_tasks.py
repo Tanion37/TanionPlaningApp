@@ -241,3 +241,24 @@ def executor_sections(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
     for _, lst in items:
         lst.sort(key=day_task_rank)
     return items
+
+
+TELEGRAM_PRIORITY_ORDER = ("ГОРЯЩЕЕ", "МОЖНО", "НУЖНО")
+
+
+def telegram_priority_label(task: Task) -> str:
+    """Те же правила, что Горит / Можно / Нужно: важно+срочно, остальные, важно."""
+    if task.is_important() and task.is_urgent():
+        return "ГОРЯЩЕЕ"
+    if task.is_important():
+        return "НУЖНО"
+    return "МОЖНО"
+
+
+def group_by_telegram_priority(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
+    buckets: dict[str, list[Task]] = {key: [] for key in TELEGRAM_PRIORITY_ORDER}
+    for task in tasks:
+        buckets[telegram_priority_label(task)].append(task)
+    for lst in buckets.values():
+        lst.sort(key=day_task_rank)
+    return [(key, buckets[key]) for key in TELEGRAM_PRIORITY_ORDER]
