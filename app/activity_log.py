@@ -151,7 +151,7 @@ class LogEntry:
 
     @property
     def ts_key(self) -> str:
-        return self.ts.astimezone(TZ).isoformat(timespec="seconds")
+        return self.ts.astimezone(TZ).isoformat(timespec="microseconds")
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -278,6 +278,25 @@ def load_recent_entries(days: int = 14, *, root: Path | None = None) -> list[Log
     return entries
 
 
+def normalize_ts_key(value: datetime | str | None) -> str:
+    """Свести ts / undoes_ts к одному ключу (микросекунды, МСК)."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            ts = datetime.fromisoformat(text)
+        except ValueError:
+            return text
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=TZ)
+    return ts.astimezone(TZ).isoformat(timespec="microseconds")
+
+
 def meta_kind(entry: LogEntry) -> str | None:
     detail = (entry.detail or "").strip().casefold()
     if detail == "undo" or detail.startswith("undo "):
@@ -287,11 +306,37 @@ def meta_kind(entry: LogEntry) -> str | None:
     return None
 
 
+def is_auto_spawn(entry: LogEntry) -> bool:
+    """Запись о создании автокопии по периодичности."""
+    detail = (entry.detail or "").strip().casefold()
+    return detail == "периодичность" or detail.startswith("периодичность ")
+
+
+def _entries_by_ts(entries: Iterable[LogEntry]) -> dict[str, LogEntry]:
+    return {normalize_ts_key(e.ts_key): e for e in entries}
+
+
+def _is_spawn_undo(entry: LogEntry, by_ts: dict[str, LogEntry]) -> bool:
+    """Undo/redo, который откатывал автокопию, а не действие пользователя."""
+    orig = by_ts.get(normalize_ts_key(entry.undoes_ts))
+    if orig is not None and is_auto_spawn(orig):
+        return True
+    if (entry.after or "").strip() == "(удалено)":
+        snap = entry.before_state if isinstance(entry.before_state, dict) else {}
+        if str(snap.get("source") or "").strip().casefold() == "periodic":
+            return True
+    if (entry.before or "").strip() == "(удалено)":
+        snap = entry.after_state if isinstance(entry.after_state, dict) else {}
+        if str(snap.get("source") or "").strip().casefold() == "periodic":
+            return True
+    return False
+
+
 def compute_undone_ts(entries: Iterable[LogEntry]) -> set[str]:
     undone: set[str] = set()
     for e in entries:
         kind = meta_kind(e)
-        ref = (e.undoes_ts or "").strip()
+        ref = normalize_ts_key(e.undoes_ts)
         if not ref:
             continue
         if kind == "undo":
@@ -304,6 +349,8 @@ def compute_undone_ts(entries: Iterable[LogEntry]) -> set[str]:
 def is_reversible(entry: LogEntry) -> bool:
     if meta_kind(entry):
         return False
+    if is_auto_spawn(entry):
+        return False
     if entry.action == "created":
         return bool(entry.after_state) or bool(entry.task_id)
     return bool(entry.before_state)
@@ -315,20 +362,23 @@ def find_undo_target(entries: list[LogEntry] | None = None, *, root: Path | None
     for e in reversed(entries):
         if not is_reversible(e):
             continue
-        if e.ts_key in undone:
+        if normalize_ts_key(e.ts_key) in undone:
             continue
         return e
     return None
 
 
 def find_redo_target(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> LogEntry | None:
-    """Последняя активная undo-запись (её undoes_ts ещё в множестве undone)."""
+    """Последняя активная undo-запись пользовательского действия."""
     entries = entries if entries is not None else load_recent_entries(root=root)
     undone = compute_undone_ts(entries)
+    by_ts = _entries_by_ts(entries)
     for e in reversed(entries):
         if meta_kind(e) != "undo":
             continue
-        ref = (e.undoes_ts or "").strip()
+        if _is_spawn_undo(e, by_ts):
+            continue
+        ref = normalize_ts_key(e.undoes_ts)
         if ref and ref in undone:
             return e
     return None
@@ -337,45 +387,64 @@ def find_redo_target(entries: list[LogEntry] | None = None, *, root: Path | None
 MASS_UNDO_SEC = 5
 
 
+def _reversible_in_window(
+    entries: list[LogEntry],
+    *,
+    last: LogEntry,
+    undone: set[str],
+) -> list[LogEntry]:
+    cutoff = last.ts - timedelta(seconds=MASS_UNDO_SEC)
+    out: list[LogEntry] = []
+    for e in entries:
+        if e.ts < cutoff or e.ts > last.ts:
+            continue
+        if not is_reversible(e) or normalize_ts_key(e.ts_key) in undone:
+            continue
+        out.append(e)
+    return out
+
+
+def last_action_is_mass(
+    entries: list[LogEntry], last: LogEntry, *, undone: set[str]
+) -> bool:
+    """Массовое: в записи есть batch и в окне 5 с есть ещё такие же."""
+    batch = (last.batch or "").strip()
+    if not batch:
+        return False
+    window = _reversible_in_window(entries, last=last, undone=undone)
+    return sum(1 for e in window if (e.batch or "").strip() == batch) >= 2
+
+
 def find_undo_targets(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> list[LogEntry]:
-    """Если последнее действие массовое — все обратимые за последние 5 секунд."""
+    """Откат всех пользовательских изменений за 5 с до последнего. Автоспавн не входит."""
     entries = entries if entries is not None else load_recent_entries(root=root)
     last = find_undo_target(entries)
     if last is None:
         return []
-    if not (last.batch or "").strip():
-        return [last]
     undone = compute_undone_ts(entries)
-    cutoff = last.ts - timedelta(seconds=MASS_UNDO_SEC)
-    out: list[LogEntry] = []
-    for e in reversed(entries):
-        if e.ts < cutoff:
-            continue
-        if not is_reversible(e) or e.ts_key in undone:
-            continue
-        out.append(e)
-    return out or [last]
+    window = _reversible_in_window(entries, last=last, undone=undone)
+    window.reverse()
+    return window or [last]
 
 
 def find_redo_targets(entries: list[LogEntry] | None = None, *, root: Path | None = None) -> list[LogEntry]:
-    """Пакет redo: все undo за 5 секунд, если исходное действие было массовым."""
+    """Пакет redo: пользовательские undo за 5 с. Автоспавн не входит."""
     entries = entries if entries is not None else load_recent_entries(root=root)
     last = find_redo_target(entries)
     if last is None:
         return []
-    by_key = {e.ts_key: e for e in entries}
-    orig = by_key.get((last.undoes_ts or "").strip())
-    if orig is None or not (orig.batch or "").strip():
-        return [last]
     undone = compute_undone_ts(entries)
+    by_ts = _entries_by_ts(entries)
     cutoff = last.ts - timedelta(seconds=MASS_UNDO_SEC)
     out: list[LogEntry] = []
     for e in reversed(entries):
-        if e.ts < cutoff:
+        if e.ts < cutoff or e.ts > last.ts:
             continue
         if meta_kind(e) != "undo":
             continue
-        ref = (e.undoes_ts or "").strip()
+        if _is_spawn_undo(e, by_ts):
+            continue
+        ref = normalize_ts_key(e.undoes_ts)
         if ref and ref in undone:
             out.append(e)
     return out or [last]

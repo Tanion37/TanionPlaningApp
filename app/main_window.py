@@ -906,7 +906,7 @@ class MainWindow(QMainWindow):
         self.btn_restart.clicked.connect(self.restart_app_fullscreen)
         controls_layout.addWidget(self.btn_restart)
         self.btn_undo = CircleButton("↶")
-        self.btn_undo.setToolTip("Отменить последнее действие")
+        self.btn_undo.setToolTip("Отменить последнее действие (массовое — к состоянию 5 с назад)")
         self.btn_undo.clicked.connect(self.history_undo)
         controls_layout.addWidget(self.btn_undo)
         self.btn_redo = CircleButton("↷")
@@ -1106,8 +1106,8 @@ class MainWindow(QMainWindow):
 
     def reload_boards(self) -> None:
         if not self.demo_mode:
-            created = spawn_periodic_copies(self.store)
-            if created:
+            created, changed = spawn_periodic_copies(self.store)
+            if changed:
                 self.store.save()
                 for task in created:
                     append_log(

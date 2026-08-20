@@ -1,8 +1,8 @@
 """Периодические задачи: новая копия по календарю, не сдвиг той же карточки.
 
-Вариант C: следующая появляется, только если в серии нет открытой копии
-и календарный слот уже наступил (или покрывает сегодня).
-Последний отменённый экземпляр останавливает серию.
+Следующая копия – на завтра, с тегом «входящая», только если в серии нет
+открытого экземпляра. Последний отменённый экземпляр останавливает серию.
+Если снова открыт неавтоспавн, лишние автокопии снимаются.
 """
 
 from __future__ import annotations
@@ -56,18 +56,9 @@ def add_period(d: date, period: str) -> date:
     raise ValueError(period)
 
 
-def next_occurrence_start(anchor: date, period: str, today: date) -> date | None:
-    """Старт текущего календарного слота, если он уже наступил; иначе None."""
-    nxt = add_period(anchor, period)
-    for _ in range(4000):
-        nxt2 = add_period(nxt, period)
-        if nxt2 <= today:
-            nxt = nxt2
-            continue
-        break
-    if nxt <= today:
-        return nxt
-    return None
+def next_copy_start(today: date) -> date:
+    """Старт новой копии – всегда завтра."""
+    return today + timedelta(days=1)
 
 
 def ensure_task_series(task: Task) -> bool:
@@ -107,35 +98,44 @@ def _anchor(task: Task, today: date) -> date:
 
 def _copy_open_tags(tags: list[str]) -> list[str]:
     from .tags import (
+        ACTUAL_TAG,
         CANCEL_ALIASES,
         CANCEL_TAG,
         DONE_ALIASES,
         DONE_TAG,
+        INBOX_TAG,
         canonicalize_tag_key,
     )
 
+    skip = DONE_ALIASES | CANCEL_ALIASES | {DONE_TAG, CANCEL_TAG, ACTUAL_TAG, "актуально"}
     out: list[str] = []
     for tag in tags:
         key = canonicalize_tag_key(tag) or tag
-        if key in DONE_ALIASES or key in CANCEL_ALIASES:
-            continue
-        if key in {DONE_TAG, CANCEL_TAG}:
+        if key in skip:
             continue
         if tag not in out:
             out.append(tag)
+    if INBOX_TAG not in out:
+        out.append(INBOX_TAG)
     return out
 
 
 def _make_copy(store, src: Task, new_start: date, today: date) -> Task:
     from .xlsx_store import _next_id, _normalize_tag_list
 
-    anchor = _anchor(src, today)
-    delta = new_start - anchor
-    start_at = src.start_at + delta if src.start_at else None
-    due_at = src.due_at + delta if src.due_at else None
-    remind_at = src.remind_at + delta if src.remind_at else None
-    if start_at is None and due_at is None and remind_at is None:
-        start_at = new_start
+    start_at = new_start
+    if src.start_at and src.due_at:
+        due_at = new_start + (src.due_at - src.start_at)
+    elif src.due_at:
+        due_at = new_start
+    else:
+        due_at = None
+    if src.start_at and src.remind_at:
+        remind_at = new_start + (src.remind_at - src.start_at)
+    elif src.remind_at:
+        remind_at = new_start
+    else:
+        remind_at = None
     series_id = str(src.series_id or src.id).strip() or src.id
     task = Task(
         id=_next_id(store.tasks),
@@ -161,8 +161,11 @@ def _make_copy(store, src: Task, new_start: date, today: date) -> Task:
     return task
 
 
-def spawn_periodic_copies(store, today: date | None = None) -> list[Task]:
-    """Создать просроченные по календарю копии. Не трогает открытые серии."""
+def spawn_periodic_copies(store, today: date | None = None) -> tuple[list[Task], bool]:
+    """Создать копию на завтра, если серия закрыта. Снять лишние автокопии.
+
+    Вернуть (новые копии, были ли изменения в store).
+    """
     today = today or date.today()
     ensure_series_ids(store.tasks)
     by_series: dict[str, list[Task]] = {}
@@ -172,6 +175,25 @@ def spawn_periodic_copies(store, today: date | None = None) -> list[Task]:
         sid = str(task.series_id or task.id).strip() or task.id
         by_series.setdefault(sid, []).append(task)
 
+    stale: list[Task] = []
+    for members in by_series.values():
+        open_members = [t for t in members if not t.is_done() and not t.is_cancelled()]
+        has_user_open = any((t.source or "").strip().casefold() != "periodic" for t in open_members)
+        if not has_user_open:
+            continue
+        for task in open_members:
+            if (task.source or "").strip().casefold() == "periodic":
+                stale.append(task)
+    if stale:
+        stale_ids = {id(t) for t in stale}
+        store.tasks[:] = [t for t in store.tasks if id(t) not in stale_ids]
+        by_series = {}
+        for task in store.tasks:
+            if not canonical_period(task.remind_period):
+                continue
+            sid = str(task.series_id or task.id).strip() or task.id
+            by_series.setdefault(sid, []).append(task)
+
     created: list[Task] = []
     for members in by_series.values():
         if any(not t.is_done() and not t.is_cancelled() for t in members):
@@ -179,11 +201,7 @@ def spawn_periodic_copies(store, today: date | None = None) -> list[Task]:
         latest = max(members, key=lambda t: (_anchor(t, today), t.id))
         if latest.is_cancelled() or not latest.is_done():
             continue
-        period = canonical_period(latest.remind_period)
-        if not period:
+        if not canonical_period(latest.remind_period):
             continue
-        nxt = next_occurrence_start(_anchor(latest, today), period, today)
-        if nxt is None:
-            continue
-        created.append(_make_copy(store, latest, nxt, today))
-    return created
+        created.append(_make_copy(store, latest, next_copy_start(today), today))
+    return created, bool(created or stale)

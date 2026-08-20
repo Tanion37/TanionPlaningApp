@@ -16,6 +16,7 @@ CHECKED_TAG = "проверенная"
 BACKLOG_TAG = "бэклог"
 CORRESPONDENCE_TAG = "переписка"
 CONTROL_TAG = "контроль"
+DELEGATE_TAG = "делегируемая"
 # совместимость: бывший тег «ответы» / кнопка Ответы
 ANSWERS_TAG = CORRESPONDENCE_TAG
 TODAY_ACTION = "__today__"
@@ -141,7 +142,7 @@ TAGS: tuple[TagDef, ...] = (
     TagDef(SOCIAL_TAG, "📱", SOCIAL_TAG),
     TagDef("ИИ", "🤖", "ИИ"),
     TagDef(CORRESPONDENCE_TAG, "💬", CORRESPONDENCE_TAG),
-    TagDef("делегируемая", "📤", "делегируемая"),
+    TagDef(DELEGATE_TAG, "📤", DELEGATE_TAG),
     TagDef(CONTROL_TAG, "👁", CONTROL_TAG),
     TagDef(BACKLOG_TAG, "🗄", BACKLOG_TAG),
     TagDef("в работе", "🔧", "в работе"),
@@ -479,6 +480,24 @@ def apply_control_tag(task, today=None) -> None:
     task.add_tag(CONTROL_TAG)
     assign_start_at(task, today + timedelta(days=1))
     clear_actual_tag(task)
+
+
+def control_followup_tags(tags: Iterable[str]) -> list[str]:
+    """Копия тегов для контроля: делегируемая→контроль, актуальная→входящая."""
+    out: list[str] = []
+    for tag in tags:
+        key = canonicalize_tag_key(str(tag)) or str(tag).strip()
+        if not key:
+            continue
+        if key in DONE_ALIASES or key in CANCEL_ALIASES or key in {DONE_TAG, CANCEL_TAG}:
+            continue
+        if key == DELEGATE_TAG:
+            key = CONTROL_TAG
+        elif key == ACTUAL_TAG:
+            key = INBOX_TAG
+        if key not in out:
+            out.append(key)
+    return out
 
 
 def migrate_tag_list(

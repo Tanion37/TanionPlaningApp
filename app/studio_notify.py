@@ -161,7 +161,7 @@ def format_executor_list(executor: str, tasks: list, mention: str) -> str:
             lines.append("")
         first = False
         mark = TELEGRAM_PRIORITY_MARK.get(header, "")
-        lines.append(f"{mark} {header}".strip())
+        lines.append(header)
         for task in block:
             line = f"{mark} ☐ {task.title}".strip()
             tags = tags_to_cell(non_system_tags_of(task))
@@ -182,7 +182,8 @@ def send_executor_tasks(executor: str, tasks: list) -> str:
     if mention:
         title = f"{title} @{mention.lstrip('@')}"
     text, markup = tasks_payload(
-        title, tasks, hide_done=False, group_priority=True
+        title, tasks, hide_done=False, group_priority=True,
+        pending_done_ids=[], report_button=True,
     )
     send_interactive(
         token,
@@ -195,6 +196,7 @@ def send_executor_tasks(executor: str, tasks: list) -> str:
             "task_ids": [t.id for t in tasks],
             "hide_done": False,
             "group_priority": True,
+            "pending_done_ids": [],
         },
     )
     return text

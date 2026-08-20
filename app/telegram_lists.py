@@ -102,10 +102,17 @@ def tasks_payload(
     *,
     hide_done: bool,
     group_priority: bool = False,
+    pending_done_ids: list | None = None,
+    report_button: bool = False,
 ) -> tuple[str, dict]:
     eye = "👁 скрыть сделанное" if not hide_done else "👁 показать сделанное"
+    pending = {str(i) for i in (pending_done_ids or [])}
     lines = [title]
     buttons: list[list[dict]] = [[{"text": eye, "callback_data": "il:e"}]]
+    if report_button:
+        buttons.append(
+            [{"text": "сообщить о сделанном", "callback_data": "il:r"}]
+        )
     shown = 0
     if group_priority:
         from .day_tasks import (
@@ -126,11 +133,10 @@ def tasks_payload(
         if header:
             if not first_block:
                 lines.append("")
-            mark = TELEGRAM_PRIORITY_MARK.get(header, "")
-            lines.append(f"{mark} {header}".strip())
+            lines.append(header)
             first_block = False
         for task in visible:
-            done = task.is_done()
+            done = task.is_done() or str(task.id) in pending
             name = task.title
             short = name if len(name) <= 40 else name[:37] + "…"
             if group_priority:
@@ -165,7 +171,14 @@ def send_tasks_interactive(
 ) -> None:
     hide = bool(ctx.get("hide_done"))
     grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
-    text, markup = tasks_payload(title, tasks, hide_done=hide, group_priority=grouped)
+    text, markup = tasks_payload(
+        title,
+        tasks,
+        hide_done=hide,
+        group_priority=grouped,
+        pending_done_ids=ctx.get("pending_done_ids") or [],
+        report_button=ctx.get("kind") == "executor",
+    )
     ctx = dict(ctx)
     ctx.setdefault("task_ids", [t.id for t in tasks])
     ctx.setdefault("hide_done", hide)
@@ -344,9 +357,99 @@ def _toggle_task(task_id: str) -> None:
     store.save()
     from .period_roll import spawn_periodic_copies
 
-    created = spawn_periodic_copies(store)
-    if created:
+    created, changed = spawn_periodic_copies(store)
+    if changed:
         store.save()
+
+
+def _toggle_pending_done(ctx: dict, task_id: str) -> None:
+    pending = {str(i) for i in ctx.get("pending_done_ids") or []}
+    if task_id in pending:
+        pending.discard(task_id)
+    else:
+        pending.add(task_id)
+    ctx["pending_done_ids"] = list(pending)
+
+
+def _report_executor_done(ctx: dict) -> str:
+    """Контрольные копии, затем выполнена на оригиналах. Текст для toast."""
+    if ctx.get("kind") != "executor":
+        return "Это не список исполнителя"
+    pending = [str(i) for i in ctx.get("pending_done_ids") or []]
+    if not pending:
+        return "Нет помеченных задач"
+
+    from .executors_store import DEFAULT_EXECUTOR
+    from .models import Task
+    from .period_roll import spawn_periodic_copies
+    from .tags import CANCEL_TAG, DONE_TAG, control_followup_tags
+    from .xlsx_store import _next_id, _normalize_tag_list, now_date
+
+    store = _xlsx_store()
+    today = now_date()
+    done_n = 0
+    for tid in pending:
+        task = store.get(tid)
+        if task is None or task.is_done() or task.is_cancelled():
+            continue
+        follow = Task(
+            id=_next_id(store.tasks),
+            title=task.title,
+            created_at=today,
+            completed_at=None,
+            start_at=today,
+            due_at=task.due_at,
+            remind_at=None,
+            remind_time="",
+            remind_period="",
+            author=task.author,
+            executor=DEFAULT_EXECUTOR,
+            project=task.project,
+            description=task.description,
+            tags=_normalize_tag_list(control_followup_tags(task.tags)),
+            source="telegram",
+            series_id="",
+        )
+        store.tasks.append(follow)
+        task.remove_tag(CANCEL_TAG)
+        task.add_tag(DONE_TAG)
+        if task.completed_at is None:
+            task.completed_at = today
+        done_n += 1
+    ctx["pending_done_ids"] = []
+    if done_n == 0:
+        return "Нет помеченных задач"
+    store.save()
+    created, changed = spawn_periodic_copies(store)
+    if changed:
+        store.save()
+    return f"Сообщено о сделанном: {done_n}"
+
+
+def _rebuild_payload(ctx: dict) -> tuple[str, dict]:
+    if ctx.get("kind") == "named":
+        return _refresh_named(ctx)
+    title, tasks = _tasks_for_ctx(ctx)
+    grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
+    ctx["group_priority"] = grouped
+    return tasks_payload(
+        title,
+        tasks,
+        hide_done=bool(ctx.get("hide_done")),
+        group_priority=grouped,
+        pending_done_ids=ctx.get("pending_done_ids") or [],
+        report_button=ctx.get("kind") == "executor",
+    )
+
+
+def _answer_callback(token: str, cq_id: object, text: str | None = None) -> None:
+    payload: dict[str, Any] = {"callback_query_id": cq_id}
+    if text:
+        payload["text"] = text[:200]
+    try:
+        api(token, "answerCallbackQuery", payload)
+    except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
+        pass
 
 
 def handle_callback_query(token: str, query: dict) -> bool:
@@ -358,14 +461,14 @@ def handle_callback_query(token: str, query: dict) -> bool:
     message = query.get("message") or {}
     chat_id = (message.get("chat") or {}).get("id")
     message_id = message.get("message_id")
-    try:
-        api(token, "answerCallbackQuery", {"callback_query_id": cq_id})
-    except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
-        pass
     ctx = load_context(chat_id, message_id)
     if not ctx:
+        _answer_callback(token, cq_id)
         return True
-    if data == "il:e":
+    toast: str | None = None
+    if data == "il:r":
+        toast = _report_executor_done(ctx)
+    elif data == "il:e":
         ctx["hide_done"] = not bool(ctx.get("hide_done"))
         if ctx.get("kind") == "named" and ctx.get("list_name"):
             store = _lists_store()
@@ -376,28 +479,28 @@ def handle_callback_query(token: str, query: dict) -> bool:
             try:
                 idx = int(target)
             except ValueError:
+                _answer_callback(token, cq_id)
                 return True
             store = _lists_store()
             store.toggle_item(str(ctx.get("list_name") or ""), idx)
+        elif ctx.get("kind") == "executor":
+            _toggle_pending_done(ctx, target)
+            if target not in [str(i) for i in ctx.get("task_ids") or []]:
+                ids = list(ctx.get("task_ids") or [])
+                ids.append(target)
+                ctx["task_ids"] = ids
         else:
             _toggle_task(target)
             if target not in [str(i) for i in ctx.get("task_ids") or []]:
                 ids = list(ctx.get("task_ids") or [])
                 ids.append(target)
                 ctx["task_ids"] = ids
+    else:
+        _answer_callback(token, cq_id)
+        return True
+    _answer_callback(token, cq_id, toast)
     try:
-        if ctx.get("kind") == "named":
-            text, markup = _refresh_named(ctx)
-        else:
-            title, tasks = _tasks_for_ctx(ctx)
-            grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
-            ctx["group_priority"] = grouped
-            text, markup = tasks_payload(
-                title,
-                tasks,
-                hide_done=bool(ctx.get("hide_done")),
-                group_priority=grouped,
-            )
+        text, markup = _rebuild_payload(ctx)
         edit_interactive(token, chat_id, message_id, text, markup, ctx)
     except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
         pass
