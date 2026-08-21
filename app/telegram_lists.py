@@ -461,6 +461,21 @@ def handle_callback_query(token: str, query: dict) -> bool:
     message = query.get("message") or {}
     chat_id = (message.get("chat") or {}).get("id")
     message_id = message.get("message_id")
+    try:
+        return _handle_list_callback(token, query, data, cq_id, chat_id, message_id)
+    except Exception:
+        _answer_callback(token, cq_id, "Не удалось обновить задачу")
+        raise
+
+
+def _handle_list_callback(
+    token: str,
+    query: dict,
+    data: str,
+    cq_id: object,
+    chat_id: object,
+    message_id: object,
+) -> bool:
     ctx = load_context(chat_id, message_id)
     if not ctx:
         _answer_callback(token, cq_id)
