@@ -462,7 +462,7 @@ def handle_callback_query(token: str, query: dict) -> bool:
     chat_id = (message.get("chat") or {}).get("id")
     message_id = message.get("message_id")
     try:
-        return _handle_list_callback(token, query, data, cq_id, chat_id, message_id)
+        return _handle_list_callback(token, data, cq_id, chat_id, message_id)
     except Exception:
         _answer_callback(token, cq_id, "Не удалось обновить задачу")
         raise
@@ -470,7 +470,6 @@ def handle_callback_query(token: str, query: dict) -> bool:
 
 def _handle_list_callback(
     token: str,
-    query: dict,
     data: str,
     cq_id: object,
     chat_id: object,
