@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from PyQt6.QtCore import QDate, QEvent, QMimeData, QPoint, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDrag, QFont, QKeyEvent, QPainter, QPen, QPixmap
+from PyQt6.QtCore import QDate, QEvent, QMimeData, QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QDrag, QFont, QFontMetrics, QKeyEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -535,14 +536,24 @@ def _set_opt_date(widget: QDateEdit, value: date | None) -> None:
         widget.setDate(QDate(value.year, value.month, value.day))
 
 
+def _dialog_host_limits(parent: QWidget | None, width: int, height: int) -> tuple[int, int]:
+    host = parent.window() if parent is not None else None
+    max_w = max(360, width)
+    max_h = max(280, height)
+    if host is not None:
+        if host.width() > 0:
+            max_w = max(360, host.width() - 24)
+        if host.height() > 0:
+            max_h = max(280, host.height() - 24)
+    return max_w, max_h
+
+
 def _dialog_default_size(
     dialog: QDialog, parent: QWidget | None, width: int, height: int
 ) -> None:
     """Стартовый размер ≤ окно приложения; ресайз Windows не блокируем."""
-    host = parent.window() if parent is not None else None
-    max_w = (host.width() - 24) if host is not None and host.width() > 0 else width
-    max_w = max(360, max_w)
-    dialog.resize(min(width, max_w), height)
+    max_w, max_h = _dialog_host_limits(parent, width, height)
+    dialog.resize(min(width, max_w), min(height, max_h))
     dialog.setMinimumWidth(320)
     dialog.setMinimumHeight(280)
     screen = dialog.screen() or (
@@ -554,34 +565,162 @@ def _dialog_default_size(
     dialog.setSizeGripEnabled(True)
 
 
+def _font_metrics() -> QFontMetrics:
+    return QFontMetrics(QApplication.font())
+
+
+def _project_chips_one_row_width(names: list[str]) -> int:
+    if not names:
+        return 0
+    fm = _font_metrics()
+    pad = 24
+    gap = 6
+    widths = [fm.horizontalAdvance(name) + pad for name in names]
+    return sum(widths) + gap * max(0, len(widths) - 1)
+
+
+def _project_chip_rows(names: list[str], field_w: int) -> int:
+    if not names:
+        return 1
+    fm = _font_metrics()
+    pad = 24
+    gap = 6
+    limit = max(80, field_w)
+    x = 0
+    rows = 1
+    for i, name in enumerate(names):
+        w = fm.horizontalAdvance(name) + pad
+        if i and x + w > limit:
+            rows += 1
+            x = 0
+        x += w + gap
+    return rows
+
+
+def _task_dialog_size(
+    parent: QWidget | None,
+    base_w: int,
+    base_h: int,
+    project_names: list[str] | None,
+) -> tuple[int, int]:
+    """Ширина/высота диалога под проекты, не больше окна приложения."""
+    names = list(project_names or [])
+    label_col = 168
+    margins = 48
+    want_w = max(base_w, _project_chips_one_row_width(names) + label_col + margins)
+    max_w, max_h = _dialog_host_limits(parent, want_w, base_h)
+    width = min(want_w, max_w)
+    field_w = max(80, width - label_col - margins)
+    extra = max(0, (_project_chip_rows(names, field_w) - 1) * 36)
+    height = min(base_h + extra, max_h)
+    return width, height
+
+
+class _FlowLayout(QLayout):
+    """Кнопки в ряд, перенос на следующую строку без слайдера."""
+
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self.setContentsMargins(0, 2, 0, 2)
+        self.setSpacing(spacing)
+        self._items: list = []
+
+    def addItem(self, item) -> None:  # noqa: N802
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):  # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index: int):  # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self) -> Qt.Orientation:  # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        if width <= 0:
+            return self.minimumSize().height()
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        m = self.contentsMargins()
+        effective = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x = effective.x()
+        y = effective.y()
+        line_h = 0
+        space = self.spacing()
+        right = effective.x() + effective.width()
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + space
+            if line_h > 0 and x > effective.x() and x + hint.width() > right:
+                x = effective.x()
+                y += line_h + space
+                next_x = x + hint.width() + space
+                line_h = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_h = max(line_h, hint.height())
+        return y + line_h - rect.y() + m.bottom()
+
+
+class _ProjectChips(QWidget):
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        lay = self.layout()
+        if isinstance(lay, _FlowLayout):
+            return lay.heightForWidth(max(width, 1))
+        return super().heightForWidth(width)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        w = self.width() if self.width() > 1 else 400
+        return QSize(w, max(self.heightForWidth(w), 36))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, max(self.heightForWidth(max(self.width(), 200)), 36))
+
+
 def _project_buttons_row(
     project_edit: QLineEdit, project_names: list[str] | None
 ) -> QWidget:
-    """Кнопки проектов в горизонтальном скролле (без stretch — иначе скролл не появится)."""
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(False)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setFrameShape(QFrame.Shape.NoFrame)
-    scroll.setFixedHeight(44)
-    scroll.setMinimumWidth(0)
-    scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    inner = QWidget()
-    layout = QHBoxLayout(inner)
-    layout.setContentsMargins(0, 2, 0, 2)
-    layout.setSpacing(6)
-    names = list(project_names or [])
-    for name in names:
+    """Кнопки проектов: несколько строк, без горизонтального слайдера."""
+    wrap = _ProjectChips()
+    layout = _FlowLayout(wrap, spacing=6)
+    for name in list(project_names or []):
         btn = QPushButton(name)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda _checked=False, n=name: project_edit.setText(n))
         layout.addWidget(btn)
-    inner.adjustSize()
-    hint = inner.sizeHint()
-    inner.setFixedSize(max(hint.width(), 1), max(hint.height(), 36))
-    scroll.setWidget(inner)
-    return scroll
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    return wrap
 
 
 class _ClearableDateEdit(QDateEdit):
@@ -797,7 +936,8 @@ class NewTaskDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Новая задача")
         self.setModal(True)
-        _dialog_default_size(self, parent, 520, 680)
+        dw, dh = _task_dialog_size(parent, 520, 680, project_names)
+        _dialog_default_size(self, parent, dw, dh)
         root = QVBoxLayout(self)
 
         from .create_presets import CREATE_PRESETS
@@ -969,7 +1109,8 @@ class EditTaskDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Задача #{task.id}")
         self.setModal(True)
-        _dialog_default_size(self, parent, 560, 680)
+        dw, dh = _task_dialog_size(parent, 560, 680, project_names)
+        _dialog_default_size(self, parent, dw, dh)
 
         root = QVBoxLayout(self)
 
