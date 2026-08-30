@@ -221,6 +221,11 @@ class ListColumnWidget(QWidget):
                 lambda index: self.edit_item_requested.emit(self.column.name, index)
             )
         layout.addWidget(body, 1)
+        add_btn = QPushButton("ДОБАВИТЬ")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.setToolTip("Новый пункт (несколько через ;)")
+        add_btn.clicked.connect(lambda: self.add_requested.emit(self.column.name))
+        layout.addWidget(add_btn)
 
 
 class ListsCanvas(QWidget):
