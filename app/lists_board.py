@@ -41,27 +41,40 @@ def _pack_columns(items: list, col_count: int, load_of) -> list[list]:
 
 class ListItemRow(QWidget):
     toggled = pyqtSignal(int)
+    edit_requested = pyqtSignal(int)
 
     def __init__(self, index: int, item: ListItem, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.index = index
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        btn = QPushButton("☑" if item.done else "☐")
-        btn.setFixedWidth(28)
-        btn.setFlat(True)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setToolTip("Отметить выполненным / снять отметку")
-        btn.clicked.connect(lambda: self.toggled.emit(self.index))
+        self._btn = QPushButton("☑" if item.done else "☐")
+        self._btn.setFixedWidth(28)
+        self._btn.setFlat(True)
+        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn.setToolTip("Отметить выполненным / снять отметку")
+        self._btn.clicked.connect(lambda: self.toggled.emit(self.index))
         lab = QLabel(item.text)
         lab.setWordWrap(True)
         font = QFont("Segoe UI", 10)
         font.setStrikeOut(item.done)
         lab.setFont(font)
         lab.setStyleSheet("color:#888888;" if item.done else "color:#222222;")
-        layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignTop)
+        lab.setToolTip("Изменить пункт")
+        layout.addWidget(self._btn, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(lab, 1)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            child = self.childAt(event.position().toPoint())
+            if child is self._btn:
+                return super().mouseReleaseEvent(event)
+            self.edit_requested.emit(self.index)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class ListColumnBody(QWidget):
@@ -70,6 +83,7 @@ class ListColumnBody(QWidget):
     clicked = pyqtSignal()
     item_clicked = pyqtSignal(str)
     item_toggled = pyqtSignal(int)
+    item_edit_requested = pyqtSignal(int)
 
     def __init__(
         self,
@@ -92,6 +106,7 @@ class ListColumnBody(QWidget):
                 idx, item = entry
                 row = ListItemRow(idx, item, self)
                 row.toggled.connect(self.item_toggled.emit)
+                row.edit_requested.connect(self.item_edit_requested.emit)
                 layout.addWidget(row)
                 continue
             text = entry if isinstance(entry, str) else entry[1].text
@@ -133,6 +148,7 @@ class ListColumnWidget(QWidget):
     add_requested = pyqtSignal(str)  # canonical list name
     remove_item_requested = pyqtSignal(str, str)  # list name, item
     toggle_item_requested = pyqtSignal(str, int)
+    edit_item_requested = pyqtSignal(str, int)
     hide_done_toggled = pyqtSignal(str, bool)
 
     def __init__(
@@ -200,6 +216,9 @@ class ListColumnWidget(QWidget):
         if checkable:
             body.item_toggled.connect(
                 lambda index: self.toggle_item_requested.emit(self.column.name, index)
+            )
+            body.item_edit_requested.connect(
+                lambda index: self.edit_item_requested.emit(self.column.name, index)
             )
         layout.addWidget(body, 1)
 
@@ -300,6 +319,7 @@ class ListsCanvas(QWidget):
                     w = ListColumnWidget(col, col_w, checkable=True)
                     w.add_requested.connect(self._on_add)
                     w.toggle_item_requested.connect(self._on_toggle)
+                    w.edit_item_requested.connect(self._on_edit)
                     w.hide_done_toggled.connect(self._on_hide_done)
                 col_l.addWidget(w, 0, Qt.AlignmentFlag.AlignTop)
                 self._column_widgets.append(w)
@@ -322,6 +342,40 @@ class ListsCanvas(QWidget):
             return
         _col, err = self.store.add_item(list_name, text)
         if err and err != "already":
+            return
+        self.rebuild()
+
+    def _on_edit(self, list_name: str, index: int) -> None:
+        if getattr(self.main, "demo_mode", False):
+            return
+        col = self.store.resolve(list_name)
+        if col is None or index < 0 or index >= len(col.items):
+            return
+        current = col.items[index].text
+        text, ok = QInputDialog.getText(
+            self, f"Список «{list_name}»", "Пункт:", text=current
+        )
+        if not ok:
+            return
+        _col, err = self.store.set_item_text(list_name, index, text)
+        if err and err not in {"already", "empty"}:
+            return
+        self.rebuild()
+
+    def add_new_list(self) -> None:
+        if getattr(self.main, "demo_mode", False):
+            return
+        text, ok = QInputDialog.getText(
+            self, "Новый список", "Имя (алиасы через запятую):"
+        )
+        if not ok:
+            return
+        _col, err = self.store.add_list(text)
+        if err == "already":
+            QMessageBox.information(self, "Списки", "Такой список уже есть.")
+            return
+        if err:
+            QMessageBox.warning(self, "Списки", err)
             return
         self.rebuild()
 

@@ -271,6 +271,45 @@ class ListsStore:
         self.save()
         return col, ""
 
+    def set_item_text(
+        self, list_needle: str, index: int, text: str
+    ) -> tuple[ListColumn | None, str]:
+        """Заменить пункт; несколько через `;` — первый на это место, остальные вставить следом."""
+        col = self.resolve(list_needle)
+        if col is None or index < 0 or index >= len(col.items):
+            return None, "Пункт не найден."
+        parts = split_semicolon_items(text)
+        if not parts:
+            return col, "empty"
+        first, *rest = parts
+        if any(i != index and existing.text == first for i, existing in enumerate(col.items)):
+            return col, "already"
+        col.items[index].text = first
+        insert_at = index + 1
+        for extra in rest:
+            if any(existing.text == extra for existing in col.items):
+                continue
+            col.items.insert(insert_at, ListItem(text=extra, done=False))
+            insert_at += 1
+        self.save()
+        return col, ""
+
+    def add_list(self, header: str) -> tuple[ListColumn | None, str]:
+        """Новая колонка. Имя и алиасы через запятую (или `;`)."""
+        raw = (header or "").replace(";", ",")
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        if not parts:
+            return None, "Пустое имя списка."
+        name, aliases = parts[0], parts[1:]
+        taken = {n.casefold() for col in self.columns for n in col.all_names()}
+        for piece in [name, *aliases]:
+            if piece.casefold() in taken:
+                return None, f"«{piece}» уже есть среди списков."
+        col = ListColumn(name=name, aliases=aliases, items=[])
+        self.columns.append(col)
+        self.save()
+        return col, ""
+
     def toggle_item(self, list_needle: str, index: int) -> ListColumn | None:
         col = self.resolve(list_needle)
         if col is None or index < 0 or index >= len(col.items):

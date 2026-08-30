@@ -1463,10 +1463,20 @@ class MainWindow(QMainWindow):
     def _on_screen_changed(self, index: int) -> None:
         self._update_screen_label(index)
         self._sync_day_controls_visibility()
+        self._sync_new_button()
         self._rebuild_visible_board()
 
     def _is_day_screen(self) -> bool:
         return self.stack.currentIndex() == 3
+
+    def _is_lists_screen(self) -> bool:
+        return self.stack.currentIndex() == 2
+
+    def _sync_new_button(self) -> None:
+        if self._is_lists_screen():
+            self.btn_new_global.setToolTip("Новый список")
+        else:
+            self.btn_new_global.setToolTip("Новая задача")
 
     def _sync_day_controls_visibility(self) -> None:
         on_day = self._is_day_screen()
@@ -2416,6 +2426,9 @@ class MainWindow(QMainWindow):
         self._raise_floating()
 
     def new_task(self) -> None:
+        if self._is_lists_screen():
+            self.lists_board.add_new_list()
+            return
         self.new_task_at(None, None)
 
     def new_task_at(self, x: float | None, y: float | None) -> None:
