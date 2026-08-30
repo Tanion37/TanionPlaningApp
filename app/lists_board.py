@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .executors_store import ExecutorsStore
+from .executors_store import DEMO_EXECUTORS, ExecutorsStore
 from .layout_metrics import content_side_margins
 from .lists_store import ListColumn, ListItem, ListsStore
 
@@ -243,10 +243,15 @@ class ListsCanvas(QWidget):
 
         self._column_widgets = []
 
+        exec_names = (
+            list(DEMO_EXECUTORS)
+            if getattr(self.main, "demo_mode", False)
+            else list(self.executors.names)
+        )
         exec_col = ListColumn(
             name="Исполнители",
             aliases=["отдельный список"],
-            items=[ListItem(text=name) for name in self.executors.names],
+            items=[ListItem(text=name) for name in exec_names],
         )
         ew = ListColumnWidget(exec_col, row, item_removable=True, accent=True, checkable=False)
         ew.setFixedWidth(COL_W)
@@ -272,7 +277,9 @@ class ListsCanvas(QWidget):
     def _on_add(self, list_name: str) -> None:
         if getattr(self.main, "demo_mode", False):
             return
-        text, ok = QInputDialog.getText(self, f"Список «{list_name}»", "Новый пункт:")
+        text, ok = QInputDialog.getText(
+            self, f"Список «{list_name}»", "Новый пункт (несколько через ;):"
+        )
         if not ok:
             return
         text = text.strip()
@@ -300,7 +307,9 @@ class ListsCanvas(QWidget):
     def _on_add_executor(self, _list_name: str) -> None:
         if getattr(self.main, "demo_mode", False):
             return
-        text, ok = QInputDialog.getText(self, "Исполнители", "Новый исполнитель:")
+        text, ok = QInputDialog.getText(
+            self, "Исполнители", "Новый исполнитель (несколько через ;):"
+        )
         if not ok:
             return
         ok_add, err = self.executors.add(text)

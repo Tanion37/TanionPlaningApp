@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
+from .xlsx_io import load_workbook_retry, save_workbook_atomic, xlsx_write_lock
 from .xlsx_store import default_xlsx_path
 
 SHEET_NAME = "executors"
 DEFAULT_EXECUTOR = "Юра"
 DEFAULT_EXECUTORS: tuple[str, ...] = (DEFAULT_EXECUTOR, "Лёша", "Саша", "Сойер")
+DEMO_EXECUTORS: tuple[str, ...] = ("Кот", "Кактус", "Дракон", "Чайник")
 
 # Telegram @username для отправки списка в чат студии (без @).
 # Личные ники – в config.json → executor_telegram, не в публичном коде.
@@ -61,7 +63,7 @@ class ExecutorsStore:
             self.save()
             return list(self.names)
 
-        wb = load_workbook(self.path, data_only=True)
+        wb = load_workbook_retry(self.path, data_only=True)
         if SHEET_NAME not in wb.sheetnames:
             self.names = list(DEFAULT_EXECUTORS)
             self.save()
@@ -95,31 +97,39 @@ class ExecutorsStore:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
-            wb = load_workbook(self.path)
-        else:
-            wb = Workbook()
-            default = wb.active
-            default.title = "tasks"
-            from .xlsx_store import COLUMNS
+        with xlsx_write_lock(self.path):
+            if self.path.exists():
+                wb = load_workbook_retry(self.path)
+            else:
+                wb = Workbook()
+                default = wb.active
+                default.title = "tasks"
+                from .xlsx_store import COLUMNS
 
-            default.append(list(COLUMNS))
+                default.append(list(COLUMNS))
 
-        if SHEET_NAME in wb.sheetnames:
-            del wb[SHEET_NAME]
-        ws = wb.create_sheet(SHEET_NAME)
-        ws.append(["исполнитель"])
-        for name in self.names:
-            ws.append([name])
-        wb.save(self.path)
+            if SHEET_NAME in wb.sheetnames:
+                del wb[SHEET_NAME]
+            ws = wb.create_sheet(SHEET_NAME)
+            ws.append(["исполнитель"])
+            for name in self.names:
+                ws.append([name])
+            save_workbook_atomic(wb, self.path)
 
     def add(self, name: str) -> tuple[bool, str]:
-        text = (name or "").strip()
-        if not text:
+        from .lists_store import split_semicolon_items
+
+        parts = split_semicolon_items(name)
+        if not parts:
             return False, "Пустое имя."
-        if any(n.casefold() == text.casefold() for n in self.names):
+        added = False
+        for text in parts:
+            if any(n.casefold() == text.casefold() for n in self.names):
+                continue
+            self.names.append(text)
+            added = True
+        if not added:
             return False, "already"
-        self.names.append(text)
         self.save()
         return True, ""
 

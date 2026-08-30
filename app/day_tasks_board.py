@@ -336,7 +336,7 @@ class DayTasksCanvas(QWidget):
         today = date.today()
         if not self.main.demo_mode:
             if refresh_inbox_tags(self.main.store.tasks, today):
-                self.main.store.save()
+                self.main.request_save()
         tasks = without_day_hidden(self.main.visible_tasks())
 
         inbox = inbox_tasks(tasks)
@@ -521,7 +521,7 @@ class DayTasksCanvas(QWidget):
         before = format_task_snapshot(task)
         before_state = snapshot_dict(task)
         apply_priority_section(task, section)
-        self.main.store.save()
+        self.main.request_save()
         append_log(
             "moved",
             task,

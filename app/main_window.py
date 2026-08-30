@@ -37,12 +37,13 @@ from .activity_log import (
 from .create_presets import PRESET_DONE, PRESET_INBOX, apply_preset_to_new_task_data
 from .day_hide import hide_task as hide_task_on_day
 from .day_tasks import (
+    apply_done_keep,
     apply_inbox_to_task,
     apply_priority_section,
     refresh_inbox_tags,
 )
 from .day_tasks_board import DayTasksCanvas
-from .executors_store import DEFAULT_EXECUTOR, ExecutorsStore
+from .executors_store import DEFAULT_EXECUTOR, DEMO_EXECUTORS, ExecutorsStore
 from .layout_metrics import content_left, content_right
 from .lists_board import ListsCanvas
 from .lists_store import ListsStore
@@ -58,12 +59,16 @@ from .tags import (
     BY_KEY,
     CANCEL_TAG,
     CONTROL_TAG,
+    CORRESPONDENCE_TAG,
+    DELEGATE_TAG,
     DONE_CHECK_ACTION,
+    DONE_KEEP_ACTION,
     DONE_TAG,
     IMPORTANT_TAG,
     INBOX_TAG,
     SOCIAL_TAG,
     SPECIAL_ACTION_KEYS,
+    THINK_TAG,
     TODAY_ACTION,
     TOMORROW_ACTION,
     URGENT_TAG,
@@ -178,7 +183,7 @@ def _demo_tasks(today: date | None = None) -> list[Task]:
             id="demo-5",
             title="Написать письмо будущему себе",
             project="Тайм-капс",
-            tags=["обдумываемая", ACTUAL_TAG],
+            tags=[THINK_TAG, ACTUAL_TAG],
             start_at=today,
         ),
         Task(
@@ -200,6 +205,220 @@ def _demo_tasks(today: date | None = None) -> list[Task]:
             project="Ретро",
             tags=["сложная", ACTUAL_TAG],
             start_at=today - timedelta(days=1),
+        ),
+        Task(
+            id="demo-9",
+            title="Согласовать цвет невидимости",
+            project="UX абсурд",
+            tags=[IMPORTANT_TAG, URGENT_TAG, ACTUAL_TAG],
+            start_at=today,
+            due_at=today,
+        ),
+        Task(
+            id="demo-10",
+            title="Научить чайник ждать очереди",
+            project="Быт",
+            tags=[IMPORTANT_TAG, URGENT_TAG, ACTUAL_TAG, "быстрая"],
+            start_at=today,
+            due_at=today,
+            executor="Чайник",
+        ),
+        Task(
+            id="demo-11",
+            title="Переименовать понедельник",
+            project="Календарь",
+            tags=[IMPORTANT_TAG, ACTUAL_TAG],
+            start_at=today,
+        ),
+        Task(
+            id="demo-12",
+            title="Объяснить коту матрицу Эйзенхауэра",
+            project="Котоплан",
+            tags=[IMPORTANT_TAG, ACTUAL_TAG, "личная"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-13",
+            title="Измерить длину «пяти минут»",
+            project="R&D шуток",
+            tags=[ACTUAL_TAG, THINK_TAG],
+            start_at=today,
+        ),
+        Task(
+            id="demo-14",
+            title="Сделать вид, что календарь согласен",
+            project="Календарь",
+            tags=[ACTUAL_TAG, "быстрая"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-15",
+            title="Найти носок из бэклога",
+            project="Быт",
+            tags=[INBOX_TAG, "личная"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-16",
+            title="Собрать колоду несделанных дел",
+            project="Настолки",
+            tags=[INBOX_TAG, "геймдизайн"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-17",
+            title="Протестировать кнопку «потом»",
+            project="UX абсурд",
+            tags=[INBOX_TAG, "сложная"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-18",
+            title="Уговорить принтер не судить",
+            project="Офис",
+            tags=[INBOX_TAG, "быстрая"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-19",
+            title="Помирить стикеры на холодильнике",
+            project="Быт",
+            tags=["личная", INBOX_TAG],
+            start_at=tomorrow,
+        ),
+        Task(
+            id="demo-20",
+            title="Выдать кактусу премию за стойкость",
+            project="Флора",
+            tags=[IMPORTANT_TAG, ACTUAL_TAG, "личная"],
+            start_at=tomorrow,
+        ),
+        Task(
+            id="demo-21",
+            title="Забронировать стол на двоих с дедлайном",
+            project="Тайм-капс",
+            tags=[THINK_TAG, ACTUAL_TAG],
+            start_at=tomorrow,
+        ),
+        Task(
+            id="demo-22",
+            title="Провести ретроспективу вчерашнего сна",
+            project="Ретро",
+            tags=[THINK_TAG, INBOX_TAG],
+            start_at=today + timedelta(days=3),
+        ),
+        Task(
+            id="demo-23",
+            title="Разложить кубики по характеру",
+            project="Настолки",
+            tags=["геймдизайн", ACTUAL_TAG],
+            start_at=today + timedelta(days=4),
+        ),
+        Task(
+            id="demo-24",
+            title="Написать правила, которые никто не просил",
+            project="Настолки",
+            tags=["геймдизайн", "сложная", INBOX_TAG],
+            start_at=today + timedelta(days=5),
+        ),
+        Task(
+            id="demo-25",
+            title="Перевести «срочно» на человеческий",
+            project="R&D шуток",
+            tags=[BACKLOG_TAG, THINK_TAG],
+        ),
+        Task(
+            id="demo-26",
+            title="Спрятать прокрастинацию в подвал",
+            project="Быт",
+            tags=[BACKLOG_TAG, "личная"],
+        ),
+        Task(
+            id="demo-27",
+            title="Найти кнопку «отменить вчера»",
+            project="Ретро",
+            tags=[BACKLOG_TAG, "сложная"],
+        ),
+        Task(
+            id="demo-28",
+            title="Научить Excel шутить",
+            project="Офис",
+            tags=[BACKLOG_TAG, "сложная"],
+        ),
+        Task(
+            id="demo-29",
+            title="Проверить, дышит ли дедлайн",
+            project="R&D шуток",
+            tags=[IMPORTANT_TAG, URGENT_TAG, ACTUAL_TAG],
+            start_at=today - timedelta(days=1),
+            due_at=today,
+            executor="Кот",
+        ),
+        Task(
+            id="demo-30",
+            title="Собрать кворум из одной тарелки",
+            project="Офис",
+            tags=[ACTUAL_TAG, "быстрая"],
+            start_at=today,
+            executor="Кактус",
+        ),
+        Task(
+            id="demo-31",
+            title="Нарисовать карту к холодильнику",
+            project="Мифология",
+            tags=[ACTUAL_TAG, "уличная"],
+            start_at=today,
+            executor="Дракон",
+        ),
+        Task(
+            id="demo-32",
+            title="Вернуть смысл совещанию без повестки",
+            project="Офис",
+            tags=[DELEGATE_TAG, CONTROL_TAG, ACTUAL_TAG],
+            start_at=today,
+            executor="Кот",
+        ),
+        Task(
+            id="demo-33",
+            title="Ответить всем «ок» и жить дальше",
+            project="Переписка",
+            tags=[CORRESPONDENCE_TAG, "быстрая"],
+            start_at=today,
+        ),
+        Task(
+            id="demo-34",
+            title="Подписать акт приёмки тишины",
+            project="Переписка",
+            tags=[CORRESPONDENCE_TAG, THINK_TAG],
+            start_at=today + timedelta(days=2),
+        ),
+        Task(
+            id="demo-35",
+            title="Выгулять мысль вокруг квартала",
+            project="Мифология",
+            tags=["уличная", INBOX_TAG],
+            start_at=today,
+        ),
+        Task(
+            id="demo-36",
+            title="Погладить свитер, который сам себя",
+            project="Быт",
+            tags=["личная", ACTUAL_TAG],
+            start_at=today,
+        ),
+        Task(
+            id="demo-37",
+            title="Пересчитать слонов в комнате",
+            project="Метео",
+            tags=[SOCIAL_TAG, INBOX_TAG],
+            start_at=today,
+        ),
+        Task(
+            id="demo-38",
+            title="Согласовать с луной время сна",
+            project="Календарь",
+            tags=[SOCIAL_TAG, "личная", ACTUAL_TAG],
+            start_at=today,
         ),
     ]
 
@@ -639,7 +858,7 @@ class BoardCanvas(QWidget):
         else:
             task.pos_x = None
             task.pos_y = None
-        self.store.save()
+        self.main.request_save()
         append_log(
             "moved",
             task,
@@ -714,7 +933,7 @@ class BoardCanvas(QWidget):
             return
         task.pos_x = x
         task.pos_y = y
-        self.store.save()
+        self.main.request_save()
 
     def _on_label_moved(self, ann_id: str, x: float, y: float) -> None:
         for item in self.main.annotations.labels:
@@ -829,6 +1048,12 @@ class MainWindow(QMainWindow):
         self.paint_mode: tuple[str, str] | None = None
         self._last_paint_key: tuple[str, str] | None = None  # (task_id, action) для повторного клика
         self._controls_on_left = False
+        self._save_pending = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(250)
+        self._save_timer.timeout.connect(self._flush_save)
+        self._periodic_day = date.today()
         self.setWindowTitle("TanionPlaning")
         self.resize(1280, 800)
         self._fullscreen = False
@@ -920,6 +1145,22 @@ class MainWindow(QMainWindow):
         self.btn_done_dup.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_done_dup)
 
+        self.btn_done_keep = TagCircle(
+            DONE_KEEP_ACTION, "✅↻", self.controls, draggable=True, reorderable=False
+        )
+        self.btn_done_keep.setToolTip(
+            "Отметить выполненным, но оставить: в отчёт за сегодня, задача во входящие на завтра"
+        )
+        self.btn_done_keep.clicked.connect(self._on_action_tool_clicked)
+        controls_layout.addWidget(self.btn_done_keep)
+
+        self.btn_done_check = TagCircle(
+            DONE_CHECK_ACTION, "✅👁", self.controls, draggable=True, reorderable=False
+        )
+        self.btn_done_check.setToolTip("Сделано и проверить: выполнена + копия «Проверить …» на завтра")
+        self.btn_done_check.clicked.connect(self._on_action_tool_clicked)
+        controls_layout.addWidget(self.btn_done_check)
+
         self.btn_cancel_dup = TagCircle(
             CANCEL_TAG, "🗑", self.controls, draggable=True, reorderable=False
         )
@@ -964,13 +1205,6 @@ class MainWindow(QMainWindow):
         self.btn_inbox.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_inbox)
 
-        self.btn_done_check = TagCircle(
-            DONE_CHECK_ACTION, "✅👁", self.controls, draggable=True, reorderable=False
-        )
-        self.btn_done_check.setToolTip("Сделано и проверить: выполнена + копия «Проверить …» на завтра")
-        self.btn_done_check.clicked.connect(self._on_action_tool_clicked)
-        controls_layout.addWidget(self.btn_done_check)
-
         answers_symbol = BY_KEY[ANSWERS_TAG].symbol
         self.btn_answers = TagCircle(
             ANSWERS_TAG, answers_symbol, self.controls, draggable=True, reorderable=False
@@ -991,13 +1225,14 @@ class MainWindow(QMainWindow):
 
         self._action_circles = (
             self.btn_done_dup,
+            self.btn_done_keep,
+            self.btn_done_check,
             self.btn_cancel_dup,
             self.btn_today,
             self.btn_tomorrow,
             self.btn_week,
             self.btn_backlog,
             self.btn_inbox,
-            self.btn_done_check,
             self.btn_answers,
         )
         self.controls.show()
@@ -1023,6 +1258,7 @@ class MainWindow(QMainWindow):
         # Главный экран — Задачи дня
         if not self.demo_mode:
             refresh_inbox_tags(self.store.tasks)
+            self._roll_periodic_copies()
             self.store.save()
         day_index = 3
         self.stack.setCurrentIndex(day_index)
@@ -1039,11 +1275,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self.notion_sync.sync_now)
         self.lists_store.on_change = self._note_lists_change
         self._periodic_timer = QTimer(self)
-        self._periodic_timer.setInterval(30 * 60 * 1000)
-        self._periodic_timer.timeout.connect(self.reload_boards)
+        self._periodic_timer.setInterval(60 * 1000)
+        self._periodic_timer.timeout.connect(self._on_periodic_timer)
         self._periodic_timer.start()
+        self._install_xlsx_live_reload()
 
     def _executor_names(self) -> list[str]:
+        if self.demo_mode:
+            return list(DEMO_EXECUTORS)
         self.executors_store.load()
         return list(self.executors_store.names)
 
@@ -1100,43 +1339,104 @@ class MainWindow(QMainWindow):
                 self.notion_sync.resolve_conflict(tid, prefer="remote")
         self.reload_boards()
 
+    def _read_xlsx_mtime(self) -> float:
+        try:
+            return self.store.path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _install_xlsx_live_reload(self) -> None:
+        """Подхватить запись бота в xlsx без перезапуска окна."""
+        self._own_xlsx_save = False
+        self._xlsx_mtime = self._read_xlsx_mtime()
+        orig_save = self.store.save
+
+        def save_tracked() -> None:
+            self._own_xlsx_save = True
+            try:
+                orig_save()
+            finally:
+                self._xlsx_mtime = self._read_xlsx_mtime()
+                self._own_xlsx_save = False
+
+        self.store.save = save_tracked  # type: ignore[method-assign]
+        self._xlsx_poll = QTimer(self)
+        self._xlsx_poll.setInterval(1500)
+        self._xlsx_poll.timeout.connect(self._poll_xlsx_mtime)
+        self._xlsx_poll.start()
+
+    def _poll_xlsx_mtime(self) -> None:
+        if self.demo_mode or self._own_xlsx_save:
+            return
+        mtime = self._read_xlsx_mtime()
+        if mtime <= self._xlsx_mtime:
+            return
+        self._xlsx_mtime = mtime
+        self.store.load()
+        self.lists_store.load()
+        self.executors_store.load()
+        self._xlsx_mtime = self._read_xlsx_mtime()
+        self._roll_periodic_copies()
+        self.reload_boards()
+
     def reload(self) -> None:
         self.store.load()
         self.reload_boards()
 
+    def request_save(self) -> None:
+        """Записать xlsx после текущего кадра, слить быстрые клики в одну запись."""
+        if self.demo_mode:
+            return
+        self._save_pending = True
+        self._save_timer.start()
+
+    def _flush_save(self) -> None:
+        if self.demo_mode or not self._save_pending:
+            return
+        self._save_pending = False
+        self.store.save()
+
+    def flush_save(self) -> None:
+        self._save_timer.stop()
+        self._flush_save()
+
+    def _roll_periodic_copies(self) -> bool:
+        if self.demo_mode:
+            return False
+        created, changed = spawn_periodic_copies(self.store)
+        if not changed:
+            return False
+        for task in created:
+            append_log(
+                "created",
+                task,
+                source="app",
+                detail="периодичность",
+                before_state=None,
+            )
+            self._note_task_change(task, action="upsert")
+        return True
+
+    def _on_periodic_timer(self) -> None:
+        if self.demo_mode:
+            return
+        today = date.today()
+        date_changed = today != self._periodic_day
+        self._periodic_day = today
+        inbox_changed = refresh_inbox_tags(self.store.tasks, today)
+        rolled = self._roll_periodic_copies()
+        if inbox_changed or rolled:
+            self.request_save()
+        if date_changed or inbox_changed or rolled:
+            self.reload_boards()
+
     def reload_boards(self) -> None:
-        if not self.demo_mode:
-            created, changed = spawn_periodic_copies(self.store)
-            if changed:
-                self.store.save()
-                for task in created:
-                    append_log(
-                        "created",
-                        task,
-                        source="app",
-                        detail="периодичность",
-                        before_state=None,
-                    )
-                    self._note_task_change(task, action="upsert")
-        self.logs_board.rebuild()
-        self.backlog_board.rebuild()
-        self.lists_board.rebuild()
-        self.day_board.rebuild()
-        for board in self.boards:
-            board.rebuild()
+        self._rebuild_visible_board()
         self._sync_day_controls_visibility()
         self._sync_history_buttons()
 
-    def _update_screen_label(self, index: int) -> None:
-        n = len(self.screen_titles)
-        if 0 <= index < n:
-            self.screen_label.setText(
-                f"  {self.screen_titles[index][1]}  ({index + 1}/{n})  "
-            )
-
-    def _on_screen_changed(self, index: int) -> None:
-        self._update_screen_label(index)
-        self._sync_day_controls_visibility()
+    def _rebuild_visible_board(self) -> None:
+        index = self.stack.currentIndex()
         if index == 0:
             self.logs_board.rebuild()
             return
@@ -1152,6 +1452,18 @@ class MainWindow(QMainWindow):
         board_idx = index - 4
         if 0 <= board_idx < len(self.boards):
             self.boards[board_idx].rebuild()
+
+    def _update_screen_label(self, index: int) -> None:
+        n = len(self.screen_titles)
+        if 0 <= index < n:
+            self.screen_label.setText(
+                f"  {self.screen_titles[index][1]}  ({index + 1}/{n})  "
+            )
+
+    def _on_screen_changed(self, index: int) -> None:
+        self._update_screen_label(index)
+        self._sync_day_controls_visibility()
+        self._rebuild_visible_board()
 
     def _is_day_screen(self) -> bool:
         return self.stack.currentIndex() == 3
@@ -1359,7 +1671,7 @@ class MainWindow(QMainWindow):
                     self._log_action_result(task, key, before_text, before_state, batch=batch)
                     self._note_task_change(task, before=before_state)
             if changed and not self.demo_mode:
-                self.store.save()
+                self.request_save()
             if changed:
                 self._last_paint_key = None
                 self.reload_boards()
@@ -1397,7 +1709,7 @@ class MainWindow(QMainWindow):
                 )
                 self._note_task_change(task, before=before_state)
         if changed and not self.demo_mode:
-            self.store.save()
+            self.request_save()
         if changed:
             self._last_paint_key = None
             self.reload_boards()
@@ -1440,7 +1752,7 @@ class MainWindow(QMainWindow):
                 )
                 self._note_task_change(task, before=before_state)
         if changed and not self.demo_mode:
-            self.store.save()
+            self.request_save()
         if changed:
             self._last_paint_key = None
             self.reload_boards()
@@ -1478,7 +1790,7 @@ class MainWindow(QMainWindow):
             return
         for target in targets:
             self._undo_one(target)
-        self.store.save()
+        self.request_save()
         self.reload_boards()
         self._sync_history_buttons()
 
@@ -1489,7 +1801,7 @@ class MainWindow(QMainWindow):
 
         if target.action == "created":
             if tid:
-                self.store.remove_task(tid)
+                self.store.remove_task(tid, persist=False)
             append_log(
                 "changed",
                 task_id=tid,
@@ -1507,7 +1819,7 @@ class MainWindow(QMainWindow):
         if current is None:
             restored = task_from_state(target.before_state)
             if restored.id:
-                self.store.insert_task(restored)
+                self.store.insert_task(restored, persist=False)
                 current = restored
         else:
             self._restore_task(current, target.before_state)
@@ -1533,7 +1845,7 @@ class MainWindow(QMainWindow):
             return
         for undo_entry in targets:
             self._redo_one(undo_entry)
-        self.store.save()
+        self.request_save()
         self.reload_boards()
         self._sync_history_buttons()
 
@@ -1546,7 +1858,7 @@ class MainWindow(QMainWindow):
 
         if forward is None and tid and current is not None:
             before_snap = snapshot_dict(current)
-            self.store.remove_task(tid)
+            self.store.remove_task(tid, persist=False)
             append_log(
                 "changed",
                 task_id=tid,
@@ -1565,7 +1877,7 @@ class MainWindow(QMainWindow):
         if not restored.id and tid:
             restored.id = tid
         if self.store.get(restored.id) is None:
-            self.store.insert_task(restored)
+            self.store.insert_task(restored, persist=False)
             current = restored
         else:
             current = self.store.get(restored.id)
@@ -1637,7 +1949,7 @@ class MainWindow(QMainWindow):
             else:
                 task.toggle_tag(key)
             if not self.demo_mode:
-                self.store.save()
+                self.request_save()
                 append_log(
                     log_action,
                     task,
@@ -1654,7 +1966,7 @@ class MainWindow(QMainWindow):
         if kind == "priority":
             apply_priority_section(task, key)
             if not self.demo_mode:
-                self.store.save()
+                self.request_save()
                 append_log(
                     "moved",
                     task,
@@ -1674,7 +1986,7 @@ class MainWindow(QMainWindow):
                 return
             task.executor = key
             if not self.demo_mode:
-                self.store.save()
+                self.request_save()
                 append_log(
                     "changed",
                     task,
@@ -1691,7 +2003,7 @@ class MainWindow(QMainWindow):
         # action
         self._apply_action(task, key)
         if not self.demo_mode:
-            self.store.save()
+            self.request_save()
             self._log_action_result(task, key, before_text, before_state)
             self._note_task_change(task, before=before_state)
             self._last_paint_key = (task_id, key)
@@ -1750,7 +2062,7 @@ class MainWindow(QMainWindow):
         before_remind = task.remind_at
         self._apply_action(task, action_key)
         changed = (
-            action_key in (TODAY_ACTION, DONE_CHECK_ACTION)
+            action_key in (TODAY_ACTION, DONE_CHECK_ACTION, DONE_KEEP_ACTION)
             or task.tags != before_tags
             or task.completed_at != before_completed
             or task.start_at != before_start
@@ -1758,8 +2070,9 @@ class MainWindow(QMainWindow):
             or task.remind_at != before_remind
         )
         if changed:
-            self.store.save()
+            self.request_save()
             self._log_action_result(task, action_key, before_snap, before_state)
+            self._note_task_change(task, before=before_state)
             self._last_paint_key = None
             self.reload_boards()
             self._sync_history_buttons()
@@ -1775,7 +2088,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         key = canonicalize_tag_key(action_key) if action_key not in SPECIAL_ACTION_KEYS else action_key
         kwargs = {"before": before, "source": "app", "before_state": before_state, "batch": batch}
-        if key == DONE_TAG or key == DONE_CHECK_ACTION:
+        if key == DONE_KEEP_ACTION:
+            append_log("completed", task, detail="оставить на завтра", **kwargs)
+        elif key == DONE_TAG or key == DONE_CHECK_ACTION:
             append_log("completed", task, **kwargs)
         elif key == CANCEL_TAG:
             append_log("cancelled", task, **kwargs)
@@ -1807,6 +2122,8 @@ class MainWindow(QMainWindow):
             clear_actual_tag(task)
             if not self.demo_mode:
                 self._spawn_verify_task(task)
+        elif key == DONE_KEEP_ACTION:
+            apply_done_keep(task)
         elif key == TOMORROW_ACTION:
             move_task_to_tomorrow(task)
         elif key == WEEK_ACTION:
@@ -1830,6 +2147,7 @@ class MainWindow(QMainWindow):
         tomorrow = date.today() + timedelta(days=1)
         new = self.store.add_task(
             title=title,
+            persist=False,
             created_at=date.today(),
             start_at=tomorrow,
             tags=tags,
@@ -2008,6 +2326,7 @@ class MainWindow(QMainWindow):
 
     def restart_app_fullscreen(self) -> None:
         """Закрыть текущий процесс и открыть новый в полном экране (для обновлений кода)."""
+        self.flush_save()
         import sys
         from pathlib import Path
 
@@ -2119,6 +2438,12 @@ class MainWindow(QMainWindow):
         if not data:
             QMessageBox.warning(self, "Ошибка", "Название обязательно.")
             return
+        from .lists_store import split_semicolon_items
+
+        titles = split_semicolon_items(data.get("title") or "")
+        if not titles:
+            QMessageBox.warning(self, "Ошибка", "Название обязательно.")
+            return
         data["executor"] = (data.get("executor") or "").strip() or DEFAULT_EXECUTOR
         if x is not None and y is not None:
             data["pos_x"] = x
@@ -2136,17 +2461,23 @@ class MainWindow(QMainWindow):
         data = apply_preset_to_new_task_data(data, preset)
         if preset and preset != PRESET_INBOX:
             data["tags"] = [t for t in data["tags"] if t != INBOX_TAG]
-        task = self.store.add_task(**data)
-        if task.is_done() and task.completed_at is None:
-            task.completed_at = date.today()
-            self.store.save()
-        append_log("created", task, source="app", before_state=None)
-        if task.is_done():
-            before_done = snapshot_dict(task)
-            append_log("completed", task, source="app", before_state=before_done)
-        self._note_task_change(task, action="upsert")
+        for i, title in enumerate(titles):
+            payload = dict(data)
+            payload["title"] = title
+            if i > 0:
+                payload.pop("pos_x", None)
+                payload.pop("pos_y", None)
+            task = self.store.add_task(persist=False, **payload)
+            if task.is_done() and task.completed_at is None:
+                task.completed_at = date.today()
+            append_log("created", task, source="app", before_state=None)
+            if task.is_done():
+                before_done = snapshot_dict(task)
+                append_log("completed", task, source="app", before_state=before_done)
+            self._note_task_change(task, action="upsert")
+        self.request_save()
         self._last_paint_key = None
-        self.reload()
+        self.reload_boards()
         self._sync_history_buttons()
 
     def edit_task(self, task_id: str) -> None:
@@ -2221,7 +2552,7 @@ class MainWindow(QMainWindow):
             task.remove_tag(DONE_TAG)
             if CANCEL_TAG not in task.tags:
                 task.tags.append(CANCEL_TAG)
-        self.store.save()
+        self.request_save()
         if task.is_done() and not was_done:
             append_log(
                 "completed",
@@ -2278,6 +2609,10 @@ class MainWindow(QMainWindow):
             self._on_swipe(-1)
             return
         super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.flush_save()
+        super().closeEvent(event)
 
 
 def run_app(xlsx_path: Path | None = None) -> int:

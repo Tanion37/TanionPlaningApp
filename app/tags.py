@@ -23,9 +23,17 @@ TODAY_ACTION = "__today__"
 TOMORROW_ACTION = "__tomorrow__"
 WEEK_ACTION = "__week__"
 DONE_CHECK_ACTION = "__done_check__"
+DONE_KEEP_ACTION = "__done_keep__"
 SOCIAL_TAG = "соцсети"
+THINK_TAG = "подумать"
 SPECIAL_ACTION_KEYS = frozenset(
-    {TODAY_ACTION, TOMORROW_ACTION, WEEK_ACTION, DONE_CHECK_ACTION}
+    {
+        TODAY_ACTION,
+        TOMORROW_ACTION,
+        WEEK_ACTION,
+        DONE_CHECK_ACTION,
+        DONE_KEEP_ACTION,
+    }
 )
 # Кисти, которые по клику на раздел применяются ко всем задачам раздела.
 SECTION_BRUSH_KEYS = frozenset(
@@ -84,7 +92,9 @@ LEGACY_TAG_MAP: dict[str, str] = {
     "платежи": "финансы",
     "платёжная": "финансы",
     "платежная": "финансы",
-    "подумать": "обдумываемая",
+    "обдумываемая": THINK_TAG,
+    "обдумываемые": THINK_TAG,
+    "обдумываемый": THINK_TAG,
     "на улице": "уличная",
     "личное": "личная",
     "делегировать": "делегируемая",
@@ -136,7 +146,7 @@ TAGS: tuple[TagDef, ...] = (
     TagDef("быстрая", "⚡", "быстрая"),
     TagDef("документная", "📄", "документная"),
     TagDef("финансы", "💳", "финансы"),
-    TagDef("обдумываемая", "💡", "обдумываемая"),
+    TagDef(THINK_TAG, "💡", THINK_TAG),
     TagDef("уличная", "🚶", "уличная"),
     TagDef("личная", "🏠", "личная"),
     TagDef(SOCIAL_TAG, "📱", SOCIAL_TAG),
@@ -154,13 +164,13 @@ BY_KEY: dict[str, TagDef] = {t.key: t for t in TAGS}
 BY_SYMBOL: dict[str, TagDef] = {t.symbol: t for t in TAGS}
 BY_SYMBOL["❗"] = BY_KEY[IMPORTANT_TAG]
 BY_SYMBOL["✔"] = BY_KEY[DONE_TAG]
-BY_SYMBOL["💭"] = BY_KEY["обдумываемая"]
+BY_SYMBOL["💭"] = BY_KEY[THINK_TAG]
 BY_SYMBOL["⬇"] = BY_KEY[INBOX_TAG]
 BY_SYMBOL["↓"] = BY_KEY[INBOX_TAG]
 BY_SYMBOL["📥"] = BY_KEY[INBOX_TAG]
 BY_SYMBOL["★"] = BY_KEY[ACTUAL_TAG]
 BY_SYMBOL["☑"] = BY_KEY[CHECKED_TAG]
-BY_SYMBOL["💡"] = BY_KEY["обдумываемая"]
+BY_SYMBOL["💡"] = BY_KEY[THINK_TAG]
 BY_SYMBOL["🗄"] = BY_KEY[BACKLOG_TAG]
 BY_SYMBOL["✉"] = BY_KEY[CORRESPONDENCE_TAG]  # старый символ «ответы»
 BY_SYMBOL["🧱"] = BY_KEY["сложная"]
@@ -357,7 +367,9 @@ def normalize_tag_token(
         "платёжная": "финансы",
         "платежная": "финансы",
         "финансы": "финансы",
-        "подумать": "обдумываемая",
+        "подумать": THINK_TAG,
+        "обдумываемая": THINK_TAG,
+        "обдумываемые": THINK_TAG,
         "на улице": "уличная",
         "личное": "личная",
         "делегировать": "делегируемая",

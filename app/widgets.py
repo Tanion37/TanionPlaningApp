@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -602,16 +601,24 @@ def _task_dialog_size(
     base_w: int,
     base_h: int,
     project_names: list[str] | None,
+    executor_names: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Ширина/высота диалога под проекты, не больше окна приложения."""
-    names = list(project_names or [])
+    """Ширина/высота диалога под кнопки проектов и исполнителей."""
+    projects = list(project_names or [])
+    executors = list(executor_names or [])
     label_col = 168
     margins = 48
-    want_w = max(base_w, _project_chips_one_row_width(names) + label_col + margins)
+    chips_w = max(
+        _project_chips_one_row_width(projects),
+        _project_chips_one_row_width(executors),
+    )
+    want_w = max(base_w, chips_w + label_col + margins)
     max_w, max_h = _dialog_host_limits(parent, want_w, base_h)
     width = min(want_w, max_w)
     field_w = max(80, width - label_col - margins)
-    extra = max(0, (_project_chip_rows(names, field_w) - 1) * 36)
+    extra = max(0, (_project_chip_rows(projects, field_w) - 1) * 36)
+    if executors:
+        extra += _project_chip_rows(executors, field_w) * 36
     height = min(base_h + extra, max_h)
     return width, height
 
@@ -708,19 +715,24 @@ class _ProjectChips(QWidget):
         return QSize(0, max(self.heightForWidth(max(self.width(), 200)), 36))
 
 
+def _chip_buttons_row(edit: QLineEdit, names: list[str] | None) -> QWidget:
+    """Кнопки имён: несколько строк, без горизонтального слайдера."""
+    wrap = _ProjectChips()
+    layout = _FlowLayout(wrap, spacing=6)
+    for name in list(names or []):
+        btn = QPushButton(name)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(lambda _checked=False, n=name: edit.setText(n))
+        layout.addWidget(btn)
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    return wrap
+
+
 def _project_buttons_row(
     project_edit: QLineEdit, project_names: list[str] | None
 ) -> QWidget:
     """Кнопки проектов: несколько строк, без горизонтального слайдера."""
-    wrap = _ProjectChips()
-    layout = _FlowLayout(wrap, spacing=6)
-    for name in list(project_names or []):
-        btn = QPushButton(name)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(lambda _checked=False, n=name: project_edit.setText(n))
-        layout.addWidget(btn)
-    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-    return wrap
+    return _chip_buttons_row(project_edit, project_names)
 
 
 class _ClearableDateEdit(QDateEdit):
@@ -898,6 +910,67 @@ class TagIconsPicker(QWidget):
         self.status.setText(tags_to_cell(self._tags) or "(нет тегов)")
 
 
+def _ok_left_button_box(on_accept, on_reject) -> QWidget:
+    """ОК и Отмена в левом нижнем углу, без платформенного сдвига Qt вправо."""
+    row = QWidget()
+    lay = QHBoxLayout(row)
+    lay.setContentsMargins(0, 0, 0, 0)
+    ok = QPushButton("OK")
+    cancel = QPushButton("Отмена")
+    ok.setDefault(True)
+    ok.setAutoDefault(True)
+    cancel.setAutoDefault(False)
+    ok.clicked.connect(on_accept)
+    cancel.clicked.connect(on_reject)
+    lay.addWidget(ok)
+    lay.addWidget(cancel)
+    lay.addStretch(1)
+    return row
+
+
+def _is_form_accept_key(event: QKeyEvent) -> bool:
+    """Enter / Ctrl+Enter сохраняют форму. Shift+Enter – новая строка в описании."""
+    if event.key() not in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        return False
+    mods = event.modifiers()
+    if mods & Qt.KeyboardModifier.AltModifier:
+        return False
+    if (mods & Qt.KeyboardModifier.ShiftModifier) and not (
+        mods & Qt.KeyboardModifier.ControlModifier
+    ):
+        return False
+    return True
+
+
+def _form_popup_open(dialog: QDialog) -> bool:
+    """Выпадающий список или календарь сами обрабатывают Enter."""
+    for combo in dialog.findChildren(QComboBox):
+        view = combo.view()
+        if view is not None and view.isVisible():
+            return True
+    for de in dialog.findChildren(QDateEdit):
+        cal = de.calendarWidget()
+        if cal is not None and cal.isVisible():
+            return True
+    return False
+
+
+class _EnterAcceptDialog(QDialog):
+    """Enter закрывает диалог из любого поля (описание: Shift+Enter – новая строка)."""
+
+    def _install_enter_accept(self) -> None:
+        self.installEventFilter(self)
+        for widget in self.findChildren(QWidget):
+            widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.KeyPress and _is_form_accept_key(event):
+            if not _form_popup_open(self):
+                self._try_accept()
+                return True
+        return super().eventFilter(obj, event)
+
+
 class _DueCreatedHighlight:
     """Подсветка due < created; сохранение не блокирует."""
 
@@ -922,7 +995,7 @@ class _DueCreatedHighlight:
         return True
 
 
-class NewTaskDialog(QDialog):
+class NewTaskDialog(_EnterAcceptDialog):
     def __init__(
         self,
         parent: QWidget | None = None,
@@ -936,7 +1009,7 @@ class NewTaskDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Новая задача")
         self.setModal(True)
-        dw, dh = _task_dialog_size(parent, 520, 680, project_names)
+        dw, dh = _task_dialog_size(parent, 520, 680, project_names, executor_names)
         _dialog_default_size(self, parent, dw, dh)
         root = QVBoxLayout(self)
 
@@ -962,6 +1035,7 @@ class NewTaskDialog(QDialog):
         form = QFormLayout()
 
         self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("несколько названий — через ;")
         form.addRow("Название *", self.title_edit)
 
         self.project_edit = QLineEdit()
@@ -1011,20 +1085,15 @@ class NewTaskDialog(QDialog):
         self.author = QLineEdit()
         form.addRow("Кто поставил", self.author)
 
-        self.executor = QComboBox()
-        self.executor.setEditable(False)
-        self.executor.addItem("")
-        names = list(executor_names or [])
         from .executors_store import DEFAULT_EXECUTOR
 
+        names = list(executor_names or [])
         if DEFAULT_EXECUTOR not in names:
             names = [DEFAULT_EXECUTOR, *names]
-        for name in names:
-            self.executor.addItem(name)
-        idx = self.executor.findText(DEFAULT_EXECUTOR)
-        if idx >= 0:
-            self.executor.setCurrentIndex(idx)
+        self.executor = QLineEdit(DEFAULT_EXECUTOR)
+        self.executor.setPlaceholderText("необязательно")
         form.addRow("Исполнитель", self.executor)
+        form.addRow("", _chip_buttons_row(self.executor, names))
 
         root.addLayout(form)
 
@@ -1037,18 +1106,15 @@ class NewTaskDialog(QDialog):
         root.addWidget(self.tag_picker)
 
         hint = QLabel(
-            "Обязательно только название. Пресет сверху задаёт теги и маршрут задачи. "
+            "Обязательно только название. Несколько задач — названия через «;». "
+            "Пресет сверху задаёт теги и маршрут задачи. "
             "Время напоминания — если задано, бот пришлёт в Telegram."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._try_accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        root.addWidget(_ok_left_button_box(self._try_accept, self.reject))
+        self._install_enter_accept()
 
     def _on_preset(self, name: str) -> None:
         from .create_presets import tags_for_preset
@@ -1089,13 +1155,13 @@ class NewTaskDialog(QDialog):
             "remind_time": _opt_time(self.remind_time) or "",
             "remind_period": self.period.currentText(),
             "author": self.author.text().strip(),
-            "executor": self.executor.currentText().strip() or DEFAULT_EXECUTOR,
+            "executor": self.executor.text().strip() or DEFAULT_EXECUTOR,
             "tags": self.tag_picker.selected_keys(),
             "create_preset": self._create_preset,
         }
 
 
-class EditTaskDialog(QDialog):
+class EditTaskDialog(_EnterAcceptDialog):
     """Двойной клик: название, проект, описание, теги кликом по значкам."""
 
     def __init__(
@@ -1109,7 +1175,7 @@ class EditTaskDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Задача #{task.id}")
         self.setModal(True)
-        dw, dh = _task_dialog_size(parent, 560, 680, project_names)
+        dw, dh = _task_dialog_size(parent, 560, 680, project_names, executor_names)
         _dialog_default_size(self, parent, dw, dh)
 
         root = QVBoxLayout(self)
@@ -1150,19 +1216,14 @@ class EditTaskDialog(QDialog):
         self.author = QLineEdit(task.author)
         form.addRow("Кто поставил", self.author)
 
-        self.executor = QComboBox()
-        self.executor.setEditable(False)
-        self.executor.addItem("")
         names = list(executor_names or [])
         current = getattr(task, "executor", "") or ""
         if current and current not in names:
             names = [current, *names]
-        for name in names:
-            self.executor.addItem(name)
-        idx = self.executor.findText(current)
-        if idx >= 0:
-            self.executor.setCurrentIndex(idx)
+        self.executor = QLineEdit(current)
+        self.executor.setPlaceholderText("необязательно")
         form.addRow("Исполнитель", self.executor)
+        form.addRow("", _chip_buttons_row(self.executor, names))
 
         self.created = _make_clearable_date(task.created_at)
         form.addRow("Дата постановки", self.created)
@@ -1209,12 +1270,8 @@ class EditTaskDialog(QDialog):
         )
         root.addWidget(self.tag_picker)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._try_accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        root.addWidget(_ok_left_button_box(self._try_accept, self.reject))
+        self._install_enter_accept()
 
     def _on_preset(self, name: str) -> None:
         from .create_presets import tags_for_preset
@@ -1242,7 +1299,7 @@ class EditTaskDialog(QDialog):
             "project": self.project_edit.text().strip(),
             "description": self.description_edit.toPlainText(),
             "author": self.author.text().strip(),
-            "executor": self.executor.currentText().strip(),
+            "executor": self.executor.text().strip(),
             "created_at": _opt_date(self.created),
             "completed_at": parse_date(self.completed_text.text().strip()),
             "start_at": _opt_date(self.start),

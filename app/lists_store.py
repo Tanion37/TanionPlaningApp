@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
+from .xlsx_io import load_workbook_retry, save_workbook_atomic, xlsx_write_lock
 from .xlsx_store import default_xlsx_path
 
 SHEET_NAME = "lists"
@@ -21,7 +22,13 @@ DEFAULT_LISTS: tuple[tuple[str, ...], ...] = (
     ("Игры", "Поиграть"),
     ("Покупки",),
     ("Идеи",),
+    ("Иван", "Ивану", "Лашин", "Лашину"),
 )
+
+
+def split_semicolon_items(text: str) -> list[str]:
+    """Несколько пунктов или названий в одном поле — через `;`."""
+    return [part.strip() for part in str(text or "").split(";") if part.strip()]
 
 
 @dataclass
@@ -91,7 +98,7 @@ class ListsStore:
             self.save(notify=False)
             return list(self.columns)
 
-        wb = load_workbook(self.path, data_only=True)
+        wb = load_workbook_retry(self.path, data_only=True)
         if SHEET_NAME not in wb.sheetnames:
             self.columns = self._defaults()
             self.save(notify=False)
@@ -138,47 +145,50 @@ class ListsStore:
             return list(self.columns)
 
         self.columns = cols
+        if self._ensure_named_list("Иван", ["Ивану", "Лашин", "Лашину"]):
+            self.save(notify=False)
         return list(self.columns)
 
     def save(self, *, notify: bool = True) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
-            wb = load_workbook(self.path)
-        else:
-            wb = Workbook()
-            default = wb.active
-            default.title = "tasks"
-            from .xlsx_store import COLUMNS
+        with xlsx_write_lock(self.path):
+            if self.path.exists():
+                wb = load_workbook_retry(self.path)
+            else:
+                wb = Workbook()
+                default = wb.active
+                default.title = "tasks"
+                from .xlsx_store import COLUMNS
 
-            default.append(list(COLUMNS))
+                default.append(list(COLUMNS))
 
-        if SHEET_NAME in wb.sheetnames:
-            del wb[SHEET_NAME]
-        ws = wb.create_sheet(SHEET_NAME)
+            if SHEET_NAME in wb.sheetnames:
+                del wb[SHEET_NAME]
+            ws = wb.create_sheet(SHEET_NAME)
 
-        if not self.columns:
-            self.columns = self._defaults()
+            if not self.columns:
+                self.columns = self._defaults()
 
-        max_items = max((len(c.items) for c in self.columns), default=0)
-        headers = [c.header_cell() for c in self.columns]
-        ws.append(headers)
-        for i in range(max_items):
-            row = []
-            for c in self.columns:
-                if i < len(c.items):
-                    row.append(dump_item_cell(c.items[i]))
-                else:
-                    row.append(None)
-            ws.append(row)
+            max_items = max((len(c.items) for c in self.columns), default=0)
+            headers = [c.header_cell() for c in self.columns]
+            ws.append(headers)
+            for i in range(max_items):
+                row = []
+                for c in self.columns:
+                    if i < len(c.items):
+                        row.append(dump_item_cell(c.items[i]))
+                    else:
+                        row.append(None)
+                ws.append(row)
 
-        if VIEW_SHEET in wb.sheetnames:
-            del wb[VIEW_SHEET]
-        view = wb.create_sheet(VIEW_SHEET)
-        view.append(["name", "hide_done"])
-        for col in self.columns:
-            view.append([col.name, 1 if col.hide_done else 0])
+            if VIEW_SHEET in wb.sheetnames:
+                del wb[VIEW_SHEET]
+            view = wb.create_sheet(VIEW_SHEET)
+            view.append(["name", "hide_done"])
+            for col in self.columns:
+                view.append([col.name, 1 if col.hide_done else 0])
 
-        wb.save(self.path)
+            save_workbook_atomic(wb, self.path)
         if notify and self.on_change is not None:
             self.on_change()
 
@@ -203,6 +213,28 @@ class ListsStore:
             for names in DEFAULT_LISTS
         ]
 
+    def _ensure_named_list(self, name: str, aliases: list[str]) -> bool:
+        """Добавить список (или недостающие алиасы), если его ещё нет. True — колонки изменились."""
+        needles = [name, *[a for a in aliases if a.strip()]]
+        existing: ListColumn | None = None
+        for needle in needles:
+            existing = self.resolve(needle)
+            if existing is not None:
+                break
+        if existing is None:
+            self.columns.append(ListColumn(name=name, aliases=list(aliases), items=[]))
+            return True
+        have = {n.casefold() for n in existing.all_names()}
+        extra = [
+            a
+            for a in aliases
+            if a.strip() and a.casefold() not in have
+        ]
+        if extra:
+            existing.aliases.extend(extra)
+            return True
+        return False
+
     def resolve(self, needle: str) -> ListColumn | None:
         key = (needle or "").strip().casefold()
         if not key:
@@ -221,16 +253,21 @@ class ListsStore:
         return None
 
     def add_item(self, list_needle: str, item: str) -> tuple[ListColumn | None, str]:
-        """Добавить пункт. Вернуть (колонка, сообщение об ошибке или '')."""
-        text = (item or "").strip()
-        if not text:
+        """Добавить пункт или несколько через `;`. Вернуть (колонка, сообщение об ошибке или '')."""
+        parts = split_semicolon_items(item)
+        if not parts:
             return None, "Пустой пункт списка."
         col = self.resolve(list_needle)
         if col is None:
             return None, f"Список «{list_needle}» не найден."
-        if any(existing.text == text for existing in col.items):
+        added = False
+        for text in parts:
+            if any(existing.text == text for existing in col.items):
+                continue
+            col.items.append(ListItem(text=text, done=False))
+            added = True
+        if not added:
             return col, "already"
-        col.items.append(ListItem(text=text, done=False))
         self.save()
         return col, ""
 

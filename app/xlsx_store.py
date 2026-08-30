@@ -7,10 +7,11 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 from .models import Task, format_date, parse_date
 from .projects import resolve_project_name, unify_project_casing
+from .xlsx_io import load_workbook_retry, save_workbook_atomic, xlsx_write_lock
 from .tags import (
     IMPORTANT_TAG,
     canonicalize_tag_key,
@@ -189,7 +190,7 @@ class TaskStore:
     def load(self) -> list[Task]:
         self.ensure_exists()
         # data_only=False: формулы не нужны; False надёжнее при свежем сохранении из Excel
-        wb = load_workbook(self.path, data_only=False)
+        wb = load_workbook_retry(self.path, data_only=False)
         # Важно: НЕ wb.active — после Excel активным может быть lists → «пустые» задачи
         if TASKS_SHEET in wb.sheetnames:
             ws = wb[TASKS_SHEET]
@@ -298,10 +299,11 @@ class TaskStore:
         if not self.path.exists():
             return
         try:
-            wb = load_workbook(self.path)
-            if TAGS_SHEET not in wb.sheetnames:
-                write_tags_sheet(wb)
-                wb.save(self.path)
+            with xlsx_write_lock(self.path):
+                wb = load_workbook_retry(self.path)
+                if TAGS_SHEET not in wb.sheetnames:
+                    write_tags_sheet(wb)
+                    save_workbook_atomic(wb, self.path)
         except OSError:
             pass
 
@@ -310,45 +312,46 @@ class TaskStore:
         from .tags_sheet import write_tags_sheet
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
-            wb = load_workbook(self.path)
-            if TASKS_SHEET in wb.sheetnames:
-                del wb[TASKS_SHEET]
-            ws = wb.create_sheet(TASKS_SHEET, 0)
-        else:
-            wb = Workbook()
-            ws = wb.active
-            ws.title = TASKS_SHEET
-        ws.append(list(COLUMNS))
-        for task in self.tasks:
-            ws.append(
-                [
-                    task.id,
-                    task.title,
-                    format_date(task.created_at),
-                    format_date(task.completed_at),
-                    format_date(task.start_at),
-                    format_date(task.due_at),
-                    format_date(task.remind_at),
-                    getattr(task, "remind_time", "") or "",
-                    task.remind_period,
-                    task.author,
-                    getattr(task, "executor", "") or "",
-                    task.project,
-                    task.description,
-                    tags_to_cell(task.tags),
-                    task.pos_x,
-                    task.pos_y,
-                    task.author_id,
-                    task.chat_id,
-                    task.source,
-                    getattr(task, "series_id", "") or "",
-                ]
-            )
-        write_tags_sheet(wb)
-        wb.save(self.path)
+        with xlsx_write_lock(self.path):
+            if self.path.exists():
+                wb = load_workbook_retry(self.path)
+                if TASKS_SHEET in wb.sheetnames:
+                    del wb[TASKS_SHEET]
+                ws = wb.create_sheet(TASKS_SHEET, 0)
+            else:
+                wb = Workbook()
+                ws = wb.active
+                ws.title = TASKS_SHEET
+            ws.append(list(COLUMNS))
+            for task in self.tasks:
+                ws.append(
+                    [
+                        task.id,
+                        task.title,
+                        format_date(task.created_at),
+                        format_date(task.completed_at),
+                        format_date(task.start_at),
+                        format_date(task.due_at),
+                        format_date(task.remind_at),
+                        getattr(task, "remind_time", "") or "",
+                        task.remind_period,
+                        task.author,
+                        getattr(task, "executor", "") or "",
+                        task.project,
+                        task.description,
+                        tags_to_cell(task.tags),
+                        task.pos_x,
+                        task.pos_y,
+                        task.author_id,
+                        task.chat_id,
+                        task.source,
+                        getattr(task, "series_id", "") or "",
+                    ]
+                )
+            write_tags_sheet(wb)
+            save_workbook_atomic(wb, self.path)
 
-    def add_task(self, title: str, **kwargs) -> Task:
+    def add_task(self, title: str, *, persist: bool = True, **kwargs) -> Task:
         task = Task(
             id=_next_id(self.tasks),
             title=title.strip(),
@@ -375,7 +378,8 @@ class TaskStore:
 
         ensure_task_series(task)
         self.tasks.append(task)
-        self.save()
+        if persist:
+            self.save()
         return task
 
     def get(self, task_id: str) -> Task | None:
@@ -384,24 +388,27 @@ class TaskStore:
                 return task
         return None
 
-    def remove_task(self, task_id: str) -> bool:
+    def remove_task(self, task_id: str, *, persist: bool = True) -> bool:
         before = len(self.tasks)
         self.tasks = [t for t in self.tasks if t.id != task_id]
         if len(self.tasks) == before:
             return False
-        self.save()
+        if persist:
+            self.save()
         return True
 
-    def insert_task(self, task: Task) -> Task:
+    def insert_task(self, task: Task, *, persist: bool = True) -> Task:
         from .activity_log import apply_state_to_task, snapshot_dict
 
         existing = self.get(task.id)
         if existing is not None:
             apply_state_to_task(existing, snapshot_dict(task))
-            self.save()
+            if persist:
+                self.save()
             return existing
         self.tasks.append(task)
-        self.save()
+        if persist:
+            self.save()
         return task
 
     def _from_json(self, path: Path) -> list[Task]:

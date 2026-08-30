@@ -10,6 +10,9 @@ from .executors_store import is_own_executor
 from .models import Task
 from .tags import (
     ACTUAL_TAG,
+    BACKLOG_TAG,
+    CANCEL_TAG,
+    DONE_TAG,
     IMPORTANT_TAG,
     INBOX_TAG,
     SYSTEM_TAG_KEYS,
@@ -42,7 +45,8 @@ def refresh_inbox_tags(tasks: Iterable[Task], today: date | None = None) -> bool
     return changed
 
 
-def inbox_tasks(tasks: Iterable[Task]) -> list[Task]:
+def inbox_tasks(tasks: Iterable[Task], today: date | None = None) -> list[Task]:
+    today = today or date.today()
     return sorted(
         [
             t
@@ -50,6 +54,7 @@ def inbox_tasks(tasks: Iterable[Task]) -> list[Task]:
             if not t.is_hidden_from_boards()
             and t.is_inbox()
             and is_own_executor(getattr(t, "executor", None))
+            and (t.start_at is None or t.start_at <= today)
         ],
         key=lambda t: t.title.casefold(),
     )
@@ -102,7 +107,7 @@ def apply_priority_section(task: Task, section: str) -> None:
 
 def apply_inbox_to_task(task: Task, today: date | None = None) -> None:
     """Перевести задачу во входящие (кисть «Входящие»)."""
-    from .tags import BACKLOG_TAG, assign_start_at, clear_actual_tag
+    from .tags import assign_start_at, clear_actual_tag
 
     today = today or date.today()
     clear_actual_tag(task)
@@ -110,6 +115,21 @@ def apply_inbox_to_task(task: Task, today: date | None = None) -> None:
     task.add_tag(INBOX_TAG)
     if task.start_at is None or task.start_at > today:
         assign_start_at(task, today, clear_inbox=False)
+
+
+def apply_done_keep(task: Task, today: date | None = None) -> None:
+    """Засчитать выполнение сегодня, саму задачу во входящие на завтра."""
+    from datetime import timedelta
+
+    from .tags import assign_start_at, clear_actual_tag
+
+    today = today or date.today()
+    task.remove_tag(DONE_TAG)
+    task.remove_tag(CANCEL_TAG)
+    task.remove_tag(BACKLOG_TAG)
+    clear_actual_tag(task)
+    task.add_tag(INBOX_TAG)
+    assign_start_at(task, today + timedelta(days=1), clear_inbox=False)
 
 
 def move_actual_to_inbox(tasks: Iterable[Task]) -> int:
@@ -231,7 +251,7 @@ def executor_sections(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
     """Разделы ДЕНЬ по исполнителям, кроме Юры / пустого."""
     by_name: dict[str, list[Task]] = {}
     for task in tasks:
-        if task.is_hidden_from_boards():
+        if task.is_hidden_from_boards() or not task.is_actual():
             continue
         name = (getattr(task, "executor", None) or "").strip()
         if is_own_executor(name):
