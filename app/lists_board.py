@@ -25,6 +25,20 @@ COL_GAP = 20
 TOP = 48
 
 
+def _pack_columns(items: list, col_count: int, load_of) -> list[list]:
+    """Как pack_day_columns: в колонку с наименьшей нагрузкой."""
+    if not items:
+        return []
+    n = max(1, min(col_count, len(items)))
+    columns: list[list] = [[] for _ in range(n)]
+    loads = [0] * n
+    for item in items:
+        i = min(range(n), key=lambda j: (loads[j], j))
+        columns[i].append(item)
+        loads[i] += int(load_of(item))
+    return columns
+
+
 class ListItemRow(QWidget):
     toggled = pyqtSignal(int)
 
@@ -67,8 +81,8 @@ class ListColumnBody(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        self.setMinimumHeight(120)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self.setMinimumHeight(72)
         self._item_removable = item_removable
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 0)
@@ -92,7 +106,10 @@ class ListColumnBody(QWidget):
             else:
                 lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             layout.addWidget(lab)
-        layout.addStretch(1)
+        pad = QWidget()
+        pad.setFixedHeight(28)
+        pad.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(pad)
 
     def _on_item_click(self, event, text: str) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -129,8 +146,8 @@ class ListColumnWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self.column = column
-        self.setMinimumWidth(COL_W)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setFixedWidth(COL_W)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 8, 4, 8)
         layout.setSpacing(4)
@@ -204,6 +221,8 @@ class ListsCanvas(QWidget):
         self._press_pos: QPoint | None = None
         self._swipe_armed = False
         self._column_widgets: list[ListColumnWidget] = []
+        self._last_pack: int | None = None
+        self._relayouting = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -231,7 +250,7 @@ class ListsCanvas(QWidget):
                 w.deleteLater()
 
         row = QWidget(self.inner)
-        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         h = QHBoxLayout(row)
         on_left = bool(getattr(self.main, "_controls_on_left", False))
         left_m, right_m = content_side_margins(on_left, base=16)
@@ -239,10 +258,12 @@ class ListsCanvas(QWidget):
         h.setSpacing(COL_GAP)
         h.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
+        avail_w = max(COL_W, self.scroll.viewport().width() - left_m - right_m)
+        col_count = max(1, avail_w // (COL_W + COL_GAP))
         avail_h = max(200, self.scroll.viewport().height() - TOP - 24)
+        self._last_pack = col_count
 
-        self._column_widgets = []
-
+        specs: list[tuple[object, int]] = []
         exec_names = (
             list(DEMO_EXECUTORS)
             if getattr(self.main, "demo_mode", False)
@@ -253,23 +274,37 @@ class ListsCanvas(QWidget):
             aliases=["отдельный список"],
             items=[ListItem(text=name) for name in exec_names],
         )
-        ew = ListColumnWidget(exec_col, row, item_removable=True, accent=True, checkable=False)
-        ew.setFixedWidth(COL_W)
-        ew.setMinimumHeight(avail_h)
-        ew.add_requested.connect(self._on_add_executor)
-        ew.remove_item_requested.connect(self._on_remove_executor)
-        h.addWidget(ew, 0, Qt.AlignmentFlag.AlignTop)
-        self._column_widgets.append(ew)
-
+        specs.append((("exec", exec_col), max(1, len(exec_names))))
         for col in self.store.columns:
-            w = ListColumnWidget(col, row, checkable=True)
-            w.setFixedWidth(COL_W)
-            w.setMinimumHeight(avail_h)
-            w.add_requested.connect(self._on_add)
-            w.toggle_item_requested.connect(self._on_toggle)
-            w.hide_done_toggled.connect(self._on_hide_done)
-            h.addWidget(w, 0, Qt.AlignmentFlag.AlignTop)
-            self._column_widgets.append(w)
+            specs.append((("list", col), max(1, len(col.visible_items()))))
+
+        packed = _pack_columns(specs, col_count, lambda spec: spec[1])
+        self._column_widgets = []
+
+        for col_specs in packed:
+            col_w = QWidget(row)
+            col_w.setFixedWidth(COL_W)
+            col_w.setMinimumHeight(avail_h)
+            col_l = QVBoxLayout(col_w)
+            col_l.setContentsMargins(0, 0, 0, 0)
+            col_l.setSpacing(12)
+            for kind_col, _load in col_specs:
+                kind, col = kind_col
+                if kind == "exec":
+                    w = ListColumnWidget(
+                        col, col_w, item_removable=True, accent=True, checkable=False
+                    )
+                    w.add_requested.connect(self._on_add_executor)
+                    w.remove_item_requested.connect(self._on_remove_executor)
+                else:
+                    w = ListColumnWidget(col, col_w, checkable=True)
+                    w.add_requested.connect(self._on_add)
+                    w.toggle_item_requested.connect(self._on_toggle)
+                    w.hide_done_toggled.connect(self._on_hide_done)
+                col_l.addWidget(w, 0, Qt.AlignmentFlag.AlignTop)
+                self._column_widgets.append(w)
+            col_l.addStretch(1)
+            h.addWidget(col_w, 0, Qt.AlignmentFlag.AlignTop)
         h.addStretch(1)
 
         self.inner_layout.addWidget(row, 1)
@@ -351,9 +386,18 @@ class ListsCanvas(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        avail_h = max(200, self.scroll.viewport().height() - TOP - 24)
-        for w in self._column_widgets:
-            w.setMinimumHeight(avail_h)
+        if not self.isVisible() or self._relayouting:
+            return
+        on_left = bool(getattr(self.main, "_controls_on_left", False))
+        left_m, right_m = content_side_margins(on_left, base=16)
+        avail_w = max(COL_W, self.scroll.viewport().width() - left_m - right_m)
+        col_count = max(1, avail_w // (COL_W + COL_GAP))
+        if col_count != self._last_pack:
+            self._relayouting = True
+            try:
+                self.rebuild()
+            finally:
+                self._relayouting = False
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
