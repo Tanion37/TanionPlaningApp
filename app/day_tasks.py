@@ -90,6 +90,15 @@ def priority_sections(tasks: Iterable[Task]) -> dict[str, list[Task]]:
     return result
 
 
+def priority_tasks_flat(tasks: Iterable[Task]) -> list[Task]:
+    """Задачи раздела Приоритет: Горит, затем Нужно, затем Можно."""
+    sections = priority_sections(tasks)
+    out: list[Task] = []
+    for key in (SECTION_GORIT, SECTION_NUZHNO, SECTION_MOZHNO):
+        out.extend(sections[key])
+    return out
+
+
 def apply_priority_section(task: Task, section: str) -> None:
     """Мутация тегов при drop в Горит/Нужно/Можно."""
     task.remove_tag(INBOX_TAG)

@@ -170,7 +170,10 @@ def send_tasks_interactive(
     ctx: dict,
 ) -> None:
     hide = bool(ctx.get("hide_done"))
-    grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
+    grouped = bool(ctx.get("group_priority")) or ctx.get("kind") in {
+        "executor",
+        "priority",
+    }
     text, markup = tasks_payload(
         title,
         tasks,
@@ -185,6 +188,40 @@ def send_tasks_interactive(
     send_interactive(token, chat_id, text, markup, ctx)
 
 
+def _priority_live(tasks: list | None = None) -> list:
+    from .day_hide import without_hidden
+    from .day_tasks import priority_tasks_flat
+
+    if tasks is None:
+        tasks = _xlsx_store().tasks
+    return priority_tasks_flat(without_hidden(tasks))
+
+
+def send_priority_digest(
+    token: str,
+    chat_id: object,
+    tasks: list | None = None,
+    *,
+    greeting: str | None = None,
+) -> None:
+    """Приоритет в форме списка исполнителю: ГОРЯЩЕЕ / НУЖНО / МОЖНО и кружки."""
+    lst = _priority_live(tasks)
+    title = greeting or "Приоритет"
+    send_tasks_interactive(
+        token,
+        chat_id,
+        title,
+        lst,
+        {
+            "kind": "priority",
+            "title": title,
+            "task_ids": [t.id for t in lst],
+            "hide_done": False,
+            "group_priority": True,
+        },
+    )
+
+
 def send_gorit_delaem(
     token: str,
     chat_id: object,
@@ -192,25 +229,8 @@ def send_gorit_delaem(
     *,
     greeting: str | None = None,
 ) -> None:
-    from .sorting import screen_triage
-
-    if tasks is None:
-        tasks = _xlsx_store().tasks
-    cols = dict(screen_triage(tasks))
-    if greeting:
-        api(token, "sendMessage", {"chat_id": chat_id, "text": greeting})
-    for kind, title, key in (
-        ("gorit", "🔥 ГОРИТ", "ГОРИТ"),
-        ("delaem", "🛠 ДЕЛАЕМ", "ДЕЛАЕМ"),
-    ):
-        lst = cols.get(key, [])
-        send_tasks_interactive(
-            token,
-            chat_id,
-            title,
-            lst,
-            {"kind": kind, "task_ids": [t.id for t in lst], "hide_done": False},
-        )
+    """Совместимость: утро и /today шлют Приоритет, не колонки ГОРИТ/ДЕЛАЕМ."""
+    send_priority_digest(token, chat_id, tasks, greeting=greeting)
 
 
 def send_interactive(token: str, chat_id: object, text: str, markup: dict, ctx: dict) -> None:
@@ -299,6 +319,11 @@ def _tasks_for_ctx(ctx: dict) -> tuple[str, list]:
         ]
         ctx["task_ids"] = [t.id for t in tasks]
         return f"Проект «{name}»", tasks
+    if kind == "priority":
+        live = _priority_live(store.tasks)
+        tasks = _merge_remembered(live, ids, by_id)
+        ctx["task_ids"] = [t.id for t in tasks]
+        return str(ctx.get("title") or "Приоритет"), tasks
     if kind in {"gorit", "delaem"}:
         from .sorting import screen_triage
 
@@ -430,7 +455,10 @@ def _rebuild_payload(ctx: dict) -> tuple[str, dict]:
     if ctx.get("kind") == "named":
         return _refresh_named(ctx)
     title, tasks = _tasks_for_ctx(ctx)
-    grouped = bool(ctx.get("group_priority")) or ctx.get("kind") == "executor"
+    grouped = bool(ctx.get("group_priority")) or ctx.get("kind") in {
+        "executor",
+        "priority",
+    }
     ctx["group_priority"] = grouped
     return tasks_payload(
         title,
