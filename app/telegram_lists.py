@@ -67,12 +67,25 @@ def api(token: str, method: str, payload: dict | None = None) -> dict:
         headers={"Content-Type": "application/json"} if data else {},
         method="POST" if data else "GET",
     )
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            result = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            result = {}
+        desc = result.get("description") if isinstance(result, dict) else None
+        raise RuntimeError(str(desc or raw or exc)) from exc
+    result = json.loads(raw)
     if not result.get("ok"):
-        desc = result.get("description") or result
-        raise RuntimeError(str(desc))
+        raise RuntimeError(str(result.get("description") or result))
     return result
+
+
+def _edit_unchanged(exc: BaseException) -> bool:
+    return "message is not modified" in str(exc).casefold()
 
 
 def _mark(done: bool) -> str:
@@ -337,6 +350,46 @@ def edit_interactive(
         payload["parse_mode"] = parse_mode
     api(token, "editMessageText", payload)
     save_context(chat_id, message_id, ctx)
+
+
+def _strip_old_keyboard(token: str, chat_id: object, message_id: object) -> None:
+    try:
+        api(
+            token,
+            "editMessageReplyMarkup",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": {"inline_keyboard": []},
+            },
+        )
+    except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
+        pass
+
+
+def edit_or_resend_interactive(
+    token: str,
+    chat_id: object,
+    message_id: object,
+    text: str,
+    markup: dict,
+    ctx: dict,
+    *,
+    parse_mode: str | None = None,
+) -> bool:
+    """Правит сообщение. Если Telegram не обновил — шлёт новое. True = ушло новым."""
+    try:
+        edit_interactive(
+            token, chat_id, message_id, text, markup, ctx, parse_mode=parse_mode
+        )
+        return False
+    except (urllib.error.URLError, RuntimeError, TimeoutError, OSError) as exc:
+        if _edit_unchanged(exc):
+            save_context(chat_id, message_id, ctx)
+            return False
+    send_interactive(token, chat_id, text, markup, ctx, parse_mode=parse_mode)
+    _strip_old_keyboard(token, chat_id, message_id)
+    return True
 
 
 def _xlsx_store():
@@ -621,8 +674,8 @@ def _show_description(
                 {**payload, "message_id": desc_mid},
             )
             sent = True
-        except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
-            sent = False
+        except (urllib.error.URLError, RuntimeError, TimeoutError, OSError) as exc:
+            sent = _edit_unchanged(exc)
     if not sent:
         payload["reply_to_message_id"] = message_id
         try:
@@ -695,10 +748,9 @@ def _handle_list_callback(
     else:
         _answer_callback(token, cq_id)
         return True
-    _answer_callback(token, cq_id, toast)
     try:
         text, markup = _rebuild_payload(ctx)
-        edit_interactive(
+        resent = edit_or_resend_interactive(
             token,
             chat_id,
             message_id,
@@ -708,5 +760,10 @@ def _handle_list_callback(
             parse_mode=_parse_mode_for(ctx),
         )
     except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
-        pass
+        _answer_callback(token, cq_id, toast or "Не удалось обновить")
+        return True
+    if resent:
+        extra = "Список новым сообщением"
+        toast = f"{toast}. {extra}" if toast else extra
+    _answer_callback(token, cq_id, toast)
     return True
