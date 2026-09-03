@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 
+def tas_root() -> Path:
+    """Корень локального TanionAgentSetting."""
+    return _store_path().parent
+
+
 def _store_path() -> Path:
     env = (os.environ.get("TANION_AGENT_SETTINGS") or "").strip()
     candidates = []

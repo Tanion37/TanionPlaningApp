@@ -1027,6 +1027,35 @@ class BoardCanvas(QWidget):
                 self.swipe_callback(-1 if delta.x() < 0 else 1)
 
 
+def _restart_supervised_bots() -> None:
+    """Снять и сразу поднять ботов из TAS-реестра. Нет TAS — пропустить."""
+    import subprocess
+    import sys
+
+    try:
+        from .tas_secrets import tas_root
+
+        script = tas_root() / "scripts" / "bots_supervisor.py"
+    except FileNotFoundError:
+        return
+    if not script.is_file():
+        return
+    exe = Path(sys.executable)
+    pythonw = exe.with_name("pythonw.exe")
+    if pythonw.is_file():
+        exe = pythonw
+    flags = 0x08000000 | 0x00000008 | 0x00000200
+    subprocess.Popen(
+        [str(exe), str(script), "--restart-bots"],
+        cwd=str(script.parent),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=flags,
+        close_fds=True,
+    )
+
+
 class MainWindow(QMainWindow):
     def __init__(self, store: TaskStore, annotations: AnnotationStore | None = None) -> None:
         super().__init__()
@@ -1127,7 +1156,9 @@ class MainWindow(QMainWindow):
         self.btn_fullscreen.clicked.connect(self.toggle_fullscreen)
         controls_layout.addWidget(self.btn_fullscreen)
         self.btn_restart = CircleButton("↻")
-        self.btn_restart.setToolTip("Перезапустить приложение в полном экране (подтянуть обновления)")
+        self.btn_restart.setToolTip(
+            "Перезапустить приложение в полном экране и всех ботов (подтянуть обновления)"
+        )
         self.btn_restart.clicked.connect(self.restart_app_fullscreen)
         controls_layout.addWidget(self.btn_restart)
         self.btn_undo = CircleButton("↶")
@@ -2344,6 +2375,7 @@ class MainWindow(QMainWindow):
 
         from .paths import app_root
 
+        _restart_supervised_bots()
         root = str(app_root())
         if getattr(sys, "frozen", False):
             ok = QProcess.startDetached(sys.executable, ["--fullscreen"], root)
