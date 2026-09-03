@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -13,7 +14,12 @@ MAX_TASK_ROWS = 48
 ALERT_LIMIT = 200
 SYNC_BTN = "Засинхронить"
 DONE_BTN = "Готово!"
-NEW_PREFIX = "🆕 NEW"
+NEW_PREFIX = "🔴 NEW"
+NEW_HTML = "🔴 <b>NEW</b>"
+_URL_RE = re.compile(
+    r"(https?://[^\s<>]+|www\.[^\s<>]+|t\.me/[^\s<>]+)",
+    re.IGNORECASE,
+)
 
 
 def _ctx_path() -> Path:
@@ -86,6 +92,28 @@ def _clip_btn(text: str) -> str:
     if len(text) <= 64:
         return text
     return text[:61] + "…"
+
+
+def _linkify_html(text: str) -> str:
+    """Экранировать текст и обернуть URL в <a href>."""
+    parts: list[str] = []
+    pos = 0
+    for match in _URL_RE.finditer(text):
+        parts.append(_esc(text[pos : match.start()]))
+        raw = match.group(0)
+        trail = ""
+        while raw and raw[-1] in ".,);]}>\"'":
+            trail = raw[-1] + trail
+            raw = raw[:-1]
+        href = raw
+        low = href.casefold()
+        if low.startswith("www.") or low.startswith("t.me/"):
+            href = "https://" + href
+        parts.append(f'<a href="{_esc(href).replace(chr(34), "&quot;")}">{_esc(raw)}</a>')
+        parts.append(_esc(trail))
+        pos = match.end()
+    parts.append(_esc(text[pos:]))
+    return "".join(parts)
 
 
 def named_list_payload(col, *, hide_done: bool | None = None) -> tuple[str, dict]:
@@ -170,7 +198,7 @@ def tasks_payload(
             else:
                 color = TELEGRAM_PRIORITY_MARK.get(header, "") if header else ""
             prefix = f"{color} {_mark(done)}".strip() if color else _mark(done)
-            new_html = f"{NEW_PREFIX.replace('NEW', '<b>NEW</b>')} " if is_new else ""
+            new_html = f"{NEW_HTML} " if is_new else ""
             lines.append(f"{new_html}{prefix} {_esc(name)}")
             btn_core = f"{prefix} {short}"
             btn = _clip_btn(f"{NEW_PREFIX} {btn_core}" if is_new else btn_core)
@@ -563,6 +591,7 @@ def _show_description(
     chat_id: object,
     message_id: object,
     task_id: str,
+    ctx: dict,
 ) -> None:
     store = _xlsx_store()
     task = store.get(task_id)
@@ -573,24 +602,39 @@ def _show_description(
     if not desc:
         _answer_callback(token, cq_id, "Нет описания")
         return
-    body = f"{task.title}\n\n{desc}"
-    if len(body) <= ALERT_LIMIT:
-        _answer_callback(token, cq_id, body, alert=True)
-        return
-    try:
-        api(
-            token,
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": body[:4000],
-                "reply_to_message_id": message_id,
-            },
-        )
-    except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
-        _answer_callback(token, cq_id, body[:ALERT_LIMIT], alert=True)
-        return
-    _answer_callback(token, cq_id, "Описание")
+    body = f"<b>{_esc(task.title)}</b>\n\n{_linkify_html(desc)}"
+    if len(body) > 4000:
+        body = body[:3999] + "…"
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": body,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    desc_mid = ctx.get("desc_message_id")
+    sent = False
+    if desc_mid is not None:
+        try:
+            api(
+                token,
+                "editMessageText",
+                {**payload, "message_id": desc_mid},
+            )
+            sent = True
+        except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
+            sent = False
+    if not sent:
+        payload["reply_to_message_id"] = message_id
+        try:
+            result = api(token, "sendMessage", payload)
+        except (urllib.error.URLError, RuntimeError, TimeoutError, OSError):
+            _answer_callback(token, cq_id, f"{task.title}\n\n{desc}"[:ALERT_LIMIT], alert=True)
+            return
+        mid = (result.get("result") or {}).get("message_id")
+        if mid is not None:
+            ctx["desc_message_id"] = mid
+            save_context(chat_id, message_id, ctx)
+    _answer_callback(token, cq_id)
 
 
 def handle_callback_query(token: str, query: dict) -> bool:
@@ -646,7 +690,7 @@ def _handle_list_callback(
             store = _lists_store()
             store.toggle_item(str(ctx.get("list_name") or ""), idx)
         else:
-            _show_description(token, cq_id, chat_id, message_id, target)
+            _show_description(token, cq_id, chat_id, message_id, target, ctx)
             return True
     else:
         _answer_callback(token, cq_id)

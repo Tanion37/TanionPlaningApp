@@ -173,15 +173,19 @@ def format_executor_list(executor: str, tasks: list, mention: str) -> str:
 
 def send_executor_tasks(executor: str, tasks: list) -> str:
     """Отправить список. Вернуть текст, который ушёл в чат."""
+    import importlib
+
+    from . import telegram_lists
     from .executors_store import telegram_username_for
-    from .telegram_lists import send_tasks_interactive
+
+    telegram_lists = importlib.reload(telegram_lists)
 
     token, chat_id = resolve_studio_send()
     mention = telegram_username_for(executor)
     title = executor.strip() or "Исполнитель"
     if mention:
         title = f"{title} @{mention.lstrip('@')}"
-    return send_tasks_interactive(
+    return telegram_lists.send_tasks_interactive(
         token,
         chat_id,
         title,
