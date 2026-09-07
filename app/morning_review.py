@@ -20,11 +20,16 @@ from .tags import BACKLOG_TAG, CANCEL_TAG, DONE_TAG
 from .widgets import TASK_H, TASK_W
 
 # Текущий шрифт карточки задачи на досках — 9 pt.
+# Масштаб экрана по умолчанию — 4×; кнопки крупнее масштаба, задача мельче.
 BASE_TASK_FONT_PT = 9
 DEFAULT_FONT_PT = BASE_TASK_FONT_PT * 4
 MIN_FONT_PT = 12
 MAX_FONT_PT = 72
 FONT_STEP = 4
+BUTTON_FONT_NUM = 5
+BUTTON_FONT_DEN = 4
+TASK_FONT_NUM = 1
+TASK_FONT_DEN = 2
 
 MORNING_EXECUTORS = ("Владислав", "Саша", "Лёша")
 
@@ -44,6 +49,28 @@ def executor_action(name: str) -> str:
 
 def clamp_font_pt(pt: int) -> int:
     return max(MIN_FONT_PT, min(MAX_FONT_PT, int(pt)))
+
+
+def button_font_pt(scale_pt: int) -> int:
+    """Шрифт кнопок крупнее масштаба экрана."""
+    return clamp_font_pt(round(clamp_font_pt(scale_pt) * BUTTON_FONT_NUM / BUTTON_FONT_DEN))
+
+
+def task_font_pt(scale_pt: int) -> int:
+    """Шрифт задачи мельче кнопок."""
+    return max(MIN_FONT_PT, round(clamp_font_pt(scale_pt) * TASK_FONT_NUM / TASK_FONT_DEN))
+
+
+def task_size_for_font(font_pt: int) -> tuple[int, int]:
+    """Размер карточки пропорционален шрифту (200×50 при 9 pt)."""
+    scale = max(1, int(font_pt)) / BASE_TASK_FONT_PT
+    return max(1, round(TASK_W * scale)), max(1, round(TASK_H * scale))
+
+
+def task_card_size(scale_pt: int, max_w: int, max_h: int) -> tuple[int, int]:
+    """Карточка не больше кнопок: шрифт задачи, затем clamp по размеру кнопки."""
+    tw, th = task_size_for_font(task_font_pt(scale_pt))
+    return min(tw, max(1, int(max_w))), min(th, max(1, int(max_h)))
 
 
 def settings_path():
@@ -70,12 +97,6 @@ def save_font_pt(pt: int) -> None:
         json.dumps({"font_pt": clamp_font_pt(pt)}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-
-
-def task_size_for_font(font_pt: int) -> tuple[int, int]:
-    """Размер карточки пропорционален шрифту (200×50 при 9 pt)."""
-    scale = clamp_font_pt(font_pt) / BASE_TASK_FONT_PT
-    return max(1, round(TASK_W * scale)), max(1, round(TASK_H * scale))
 
 
 def current_inbox_task(tasks: Iterable[Task], today: date | None = None) -> Task | None:

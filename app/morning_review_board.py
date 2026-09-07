@@ -32,11 +32,14 @@ from .morning_review import (
     MAX_FONT_PT,
     MIN_FONT_PT,
     MORNING_EXECUTORS,
+    button_font_pt,
     clamp_font_pt,
     current_inbox_task,
     executor_action,
     load_font_pt,
     save_font_pt,
+    task_card_size,
+    task_font_pt,
     task_size_for_font,
 )
 from .tags import ACTUAL_TAG, DONE_TAG, IMPORTANT_TAG, URGENT_TAG, display_symbol
@@ -113,12 +116,17 @@ class MorningTaskCard(QWidget):
         self._drag_start: QPoint | None = None
         self._dragging = False
 
-    def set_font_pt(self, pt: int) -> None:
+    def set_metrics(self, pt: int, width: int, height: int) -> None:
         self._font_pt = pt
-        self._tw, self._th = task_size_for_font(pt)
+        self._tw = max(1, int(width))
+        self._th = max(1, int(height))
         self.setFixedSize(self._tw, self._th)
         self._refresh_style()
         self.update()
+
+    def set_font_pt(self, pt: int) -> None:
+        tw, th = task_size_for_font(pt)
+        self.set_metrics(pt, tw, th)
 
     def set_task(self, task: Task | None) -> None:
         self.task = task
@@ -404,9 +412,17 @@ class MorningReviewCanvas(QWidget):
         self._top_layout.setSpacing(gap)
         self._left_layout.setSpacing(gap)
         self._right_layout.setSpacing(gap)
-        self.card.set_font_pt(self._font_pt)
+        btn_pt = button_font_pt(self._font_pt)
         for btn in self._buttons.values():
-            btn.apply_font(self._font_pt)
+            btn.apply_font(btn_pt)
+        max_w = 1
+        max_h = 1
+        for btn in self._buttons.values():
+            hint = btn.sizeHint()
+            max_w = max(max_w, hint.width())
+            max_h = max(max_h, hint.height())
+        tw, th = task_card_size(self._font_pt, max_w, max_h)
+        self.card.set_metrics(task_font_pt(self._font_pt), tw, th)
         self.btn_minus.setEnabled(self._font_pt > MIN_FONT_PT)
         self.btn_plus.setEnabled(self._font_pt < MAX_FONT_PT)
 
