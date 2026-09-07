@@ -208,6 +208,10 @@ class TaskBlock(QWidget):
         if main is not None:
             action_key = main.action_at_global(global_pos) or main.action_at_global(bottom)
             main.set_action_highlight(action_key)
+        if host is not None and hasattr(host, "executor_at_global"):
+            exec_name = host.executor_at_global(global_pos) or host.executor_at_global(bottom)
+            if hasattr(host, "set_executor_drop_highlight"):
+                host.set_executor_drop_highlight(exec_name)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
@@ -233,6 +237,8 @@ class TaskBlock(QWidget):
             if main is not None:
                 action_key = main.action_at_global(global_pos) or main.action_at_global(bottom)
                 main.set_action_highlight(None)
+            if host is not None and hasattr(host, "set_executor_drop_highlight"):
+                host.set_executor_drop_highlight(None)
             key = tag_key or action_key
             if key:
                 self.dropped_on_tag.emit(self.task.id, key)

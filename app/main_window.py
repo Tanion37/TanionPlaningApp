@@ -1783,13 +1783,15 @@ class MainWindow(QMainWindow):
 
     def apply_executor_to_tasks(
         self, task_ids: list[str], executor: str, *, mass: bool = False
-    ) -> None:
+    ) -> bool:
+        from .day_tasks import apply_executor_assignment
+
         name = (executor or "").strip()
         if not name:
-            return
+            return False
         ids = [tid for tid in task_ids if tid]
         if not ids:
-            return
+            return False
         batch = str(uuid.uuid4()) if mass else None
         changed = False
         for tid in ids:
@@ -1799,12 +1801,10 @@ class MainWindow(QMainWindow):
                 task = self.store.get(tid)
             if not task:
                 continue
-            old = (getattr(task, "executor", "") or "").strip()
-            if old == name:
-                continue
             before_state = snapshot_dict(task)
             before_text = format_task_snapshot(task)
-            task.executor = name
+            if not apply_executor_assignment(task, name):
+                continue
             changed = True
             if not self.demo_mode:
                 append_log(
@@ -1823,6 +1823,7 @@ class MainWindow(QMainWindow):
             self._last_paint_key = None
             self.reload_boards()
             self._sync_history_buttons()
+        return changed
 
     def on_day_section_click(self, kind: str, name: str) -> None:
         ids = self.day_board.section_task_ids(kind, name)
@@ -2047,10 +2048,10 @@ class MainWindow(QMainWindow):
             self._sync_history_buttons()
             return
         if kind == "executor":
-            old = (getattr(task, "executor", "") or "").strip()
-            if old == key:
+            from .day_tasks import apply_executor_assignment
+
+            if not apply_executor_assignment(task, key):
                 return
-            task.executor = key
             if not self.demo_mode:
                 self.request_save()
                 append_log(

@@ -159,6 +159,8 @@ class DayTasksCanvas(QWidget):
         self._defer_inbox_hook = False
         self._section_ids: dict[tuple[str, str], list[str]] = {}
         self._executor_labels: dict[str, QLabel] = {}
+        self._executor_widgets: dict[str, QWidget] = {}
+        self._executor_drop: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -344,6 +346,25 @@ class DayTasksCanvas(QWidget):
             else:
                 lab.setStyleSheet("color:#444; font-weight:600;")
 
+    def executor_at_global(self, global_pos: QPoint) -> str | None:
+        for name, w in self._executor_widgets.items():
+            local = w.mapFromGlobal(global_pos)
+            if w.isVisible() and w.rect().contains(local):
+                return name
+        return None
+
+    def set_executor_drop_highlight(self, name: str | None) -> None:
+        if name == self._executor_drop:
+            return
+        self._executor_drop = name
+        for key, w in self._executor_widgets.items():
+            if name and key == name:
+                w.setStyleSheet(
+                    "background:#FFF8E1; border:2px solid #FF8C00; border-radius:4px;"
+                )
+            else:
+                w.setStyleSheet("")
+
     def _clear_blocks(self) -> None:
         for block in self._blocks:
             block.setParent(None)
@@ -383,6 +404,8 @@ class DayTasksCanvas(QWidget):
         self._clear_blocks()
         self._day_tag_circles.clear()
         self._executor_labels.clear()
+        self._executor_widgets.clear()
+        self._executor_drop = None
         self._section_ids = {}
 
         # Входящие
@@ -481,13 +504,15 @@ class DayTasksCanvas(QWidget):
                     lab.setStyleSheet("color:#444; font-weight:600;")
                     lab.setCursor(Qt.CursorShape.PointingHandCursor)
                     lab.setToolTip(
-                        f"Кисть «{tag}»: клик по задаче или разделу ставит этого исполнителя"
+                        f"Кисть «{tag}»: клик по задаче или drop сюда ставит исполнителя, "
+                        "снимает входящую и делает актуальной"
                     )
                     lab.mousePressEvent = (  # type: ignore[method-assign]
                         lambda event, name=tag: self._on_heading_press(event, "executor", name)
                     )
                     head.addWidget(lab, 1)
                     self._executor_labels[tag] = lab
+                    self._executor_widgets[tag] = sec
                     self._section_ids[("executor", tag)] = [t.id for t in tag_tasks]
                 elif tag == UNTAGGED_SECTION:
                     lab = QLabel(section_heading(tag))
@@ -528,8 +553,11 @@ class DayTasksCanvas(QWidget):
                         lambda _checked=False, name=tag: self.main.send_executor_list(name)
                     )
                     sec_l.addWidget(send_btn)
-                col_l.addWidget(sec, 0, Qt.AlignmentFlag.AlignTop)
-                col_l.addStretch(1)
+                    sec_l.addStretch(1)
+                    col_l.addWidget(sec, 1, Qt.AlignmentFlag.AlignTop)
+                else:
+                    col_l.addWidget(sec, 0, Qt.AlignmentFlag.AlignTop)
+            col_l.addStretch(1)
             self.day_layout.addWidget(col_w, 0, Qt.AlignmentFlag.AlignTop)
         self.day_layout.addStretch(1)
 
@@ -586,13 +614,19 @@ class DayTasksCanvas(QWidget):
         self.main._sync_history_buttons()
 
     def handle_task_drop_position(self, task_id: str, x: float, y: float) -> None:
-        """Если дропнули над секцией приоритета — применить секцию."""
+        """Drop: Горит/Нужно/Можно или колонка исполнителя."""
         global_pos = self.mapToGlobal(QPoint(int(x + TASK_W / 2), int(y + TASK_H / 2)))
         for sec in (self.sec_gorit, self.sec_nuzhno, self.sec_mozhno):
             local = sec.mapFromGlobal(global_pos)
             if sec.rect().contains(local):
                 self._on_section_drop(task_id, sec.section)
                 return
+        exec_name = self.executor_at_global(global_pos)
+        if exec_name:
+            if not self.main.apply_executor_to_tasks([task_id], exec_name):
+                self._clear_blocks()
+                self.main.reload_boards()
+            return
         # не попали — убрать «призрак» и пересобрать
         self._clear_blocks()
         self.main.reload_boards()

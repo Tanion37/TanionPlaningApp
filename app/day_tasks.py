@@ -119,6 +119,27 @@ def priority_tasks_flat(tasks: Iterable[Task]) -> list[Task]:
     return out
 
 
+def apply_executor_assignment(task: Task, executor: str) -> bool:
+    """Поставить исполнителя, снять входящую, сделать актуальной.
+
+    Колонка исполнителя на Дне показывает только актуальные чужие задачи;
+    входящие — только Юру. Без этой пары тегов карточка пропадает с экрана.
+    """
+    name = (executor or "").strip()
+    if not name:
+        return False
+    changed = False
+    old = (getattr(task, "executor", "") or "").strip()
+    if old != name:
+        task.executor = name
+        changed = True
+    if task.remove_tag(INBOX_TAG):
+        changed = True
+    if task.add_tag(ACTUAL_TAG):
+        changed = True
+    return changed
+
+
 def apply_priority_section(task: Task, section: str) -> None:
     """Мутация тегов при drop в Горит/Нужно/Можно."""
     task.remove_tag(INBOX_TAG)
