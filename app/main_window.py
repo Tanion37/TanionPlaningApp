@@ -69,6 +69,7 @@ from .tags import (
     SOCIAL_TAG,
     SPECIAL_ACTION_KEYS,
     THINK_TAG,
+    MONTH_ACTION,
     TODAY_ACTION,
     TOMORROW_ACTION,
     URGENT_TAG,
@@ -135,6 +136,13 @@ def move_task_by_week(task, today: date | None = None) -> None:
     from .sorting import apply_task_to_triage_column
 
     apply_task_to_triage_column(task, "НЕДЕЛЯ", today)
+
+
+def move_task_by_month(task, today: date | None = None) -> None:
+    """Старт +1 календарный месяц, как кнопка «Мес»."""
+    from .sorting import apply_month_shift
+
+    apply_month_shift(task, today)
 
 
 def apply_answers_tag(task, today: date | None = None) -> None:
@@ -1220,6 +1228,13 @@ class MainWindow(QMainWindow):
         self.btn_week.clicked.connect(self._on_action_tool_clicked)
         controls_layout.addWidget(self.btn_week)
 
+        self.btn_month = TagCircle(
+            MONTH_ACTION, "Мес", self.controls, draggable=True, reorderable=False
+        )
+        self.btn_month.setToolTip("Месяц: кисть; по разделу — все задачи раздела")
+        self.btn_month.clicked.connect(self._on_action_tool_clicked)
+        controls_layout.addWidget(self.btn_month)
+
         backlog_symbol = BY_KEY[BACKLOG_TAG].symbol
         self.btn_backlog = TagCircle(
             BACKLOG_TAG, backlog_symbol, self.controls, draggable=True, reorderable=False
@@ -1262,6 +1277,7 @@ class MainWindow(QMainWindow):
             self.btn_today,
             self.btn_tomorrow,
             self.btn_week,
+            self.btn_month,
             self.btn_backlog,
             self.btn_inbox,
             self.btn_answers,
@@ -2141,6 +2157,8 @@ class MainWindow(QMainWindow):
             append_log("moved", task, detail="ЗАВТРА", **kwargs)
         elif key == WEEK_ACTION:
             append_log("moved", task, detail="НЕДЕЛЯ", **kwargs)
+        elif key == MONTH_ACTION:
+            append_log("moved", task, detail="МЕСЯЦ", **kwargs)
         elif key == INBOX_TAG:
             append_log("moved", task, detail="ВХОДЯЩИЕ", **kwargs)
         elif key == BACKLOG_TAG:
@@ -2169,6 +2187,8 @@ class MainWindow(QMainWindow):
             move_task_to_tomorrow(task)
         elif key == WEEK_ACTION:
             move_task_by_week(task)
+        elif key == MONTH_ACTION:
+            move_task_by_month(task)
         elif key == INBOX_TAG:
             apply_inbox_to_task(task)
         elif key == ANSWERS_TAG:

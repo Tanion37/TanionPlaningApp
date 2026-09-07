@@ -22,6 +22,7 @@ ANSWERS_TAG = CORRESPONDENCE_TAG
 TODAY_ACTION = "__today__"
 TOMORROW_ACTION = "__tomorrow__"
 WEEK_ACTION = "__week__"
+MONTH_ACTION = "__month__"
 DONE_CHECK_ACTION = "__done_check__"
 DONE_KEEP_ACTION = "__done_keep__"
 SOCIAL_TAG = "соцсети"
@@ -31,13 +32,14 @@ SPECIAL_ACTION_KEYS = frozenset(
         TODAY_ACTION,
         TOMORROW_ACTION,
         WEEK_ACTION,
+        MONTH_ACTION,
         DONE_CHECK_ACTION,
         DONE_KEEP_ACTION,
     }
 )
 # Кисти, которые по клику на раздел применяются ко всем задачам раздела.
 SECTION_BRUSH_KEYS = frozenset(
-    {TOMORROW_ACTION, WEEK_ACTION, BACKLOG_TAG, INBOX_TAG}
+    {TOMORROW_ACTION, WEEK_ACTION, MONTH_ACTION, BACKLOG_TAG, INBOX_TAG}
 )
 
 DONE_ALIASES = frozenset(

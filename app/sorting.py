@@ -17,6 +17,15 @@ def add_months(d: date, months: int) -> date:
     return date(year, month, day)
 
 
+def apply_month_shift(task: Task, today: date | None = None) -> None:
+    """Как Неделя: старт +1 календарный месяц, снять актуальную; due сегодня → новый старт."""
+    today = today or date.today()
+    assign_start_at(task, add_months(today, 1))
+    clear_actual_tag(task)
+    if task.due_at == today:
+        task.due_at = task.start_at
+
+
 def apply_backlog_deferral(task: Task, today: date | None = None) -> None:
     """Отложить: старт +1 месяц, без due/remind, без важная/срочная; снять входящую."""
     today = today or date.today()

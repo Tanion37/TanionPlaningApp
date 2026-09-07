@@ -180,7 +180,7 @@ class DayTasksCanvas(QWidget):
         inbox_title.setFont(f)
         inbox_title.setCursor(Qt.CursorShape.PointingHandCursor)
         inbox_title.setToolTip(
-            "Кисть Завтра / Неделя / Бэклог / Входящие / исполнитель — ко всем задачам раздела"
+            "Кисть Завтра / Неделя / Месяц / Бэклог / Входящие / исполнитель — ко всем задачам раздела"
         )
         inbox_title.mousePressEvent = lambda event: self._on_heading_press(event, "inbox", "inbox")  # type: ignore[method-assign]
         inbox_l.addWidget(inbox_title)
