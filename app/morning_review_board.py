@@ -51,8 +51,18 @@ class MorningButton(QPushButton):
         self.setAutoDefault(False)
         self.setDefault(False)
         self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.setAcceptDrops(True)
+        self._drop_on = False
+        self._pt = 36
+
+    def set_drop_highlight(self, on: bool) -> None:
+        if on == self._drop_on:
+            return
+        self._drop_on = on
+        self._apply_chrome()
 
     def apply_font(self, pt: int) -> None:
+        self._pt = pt
         font = QFont("Segoe UI Emoji", pt)
         if not font.exactMatch():
             font = QFont("Segoe UI", pt)
@@ -64,6 +74,19 @@ class MorningButton(QPushButton):
         w = fm.horizontalAdvance(self.text()) + pad_x * 2
         h = fm.height() + pad_y * 2
         self.setMinimumSize(w, h)
+        self._apply_chrome()
+
+    def _apply_chrome(self) -> None:
+        pad_y = max(8, self._pt // 3)
+        pad_x = max(16, self._pt)
+        if self._drop_on:
+            self.setStyleSheet(
+                "QPushButton {"
+                " background:#FFF8E1; color:#E65100; border:3px solid #FF8C00; border-radius:4px;"
+                f" padding:{pad_y}px {pad_x}px;"
+                " }"
+            )
+            return
         self.setStyleSheet(
             "QPushButton {"
             " background:#FFFFFF; color:#222; border:2px solid #555; border-radius:4px;"
@@ -84,8 +107,11 @@ class MorningTaskCard(QWidget):
         self._font_pt = 36
         self._tw, self._th = task_size_for_font(self._font_pt)
         self.setFixedSize(self._tw, self._th)
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self._fg = QColor("#000000")
         self._bd = QColor("#CCCCCC")
+        self._drag_start: QPoint | None = None
+        self._dragging = False
 
     def set_font_pt(self, pt: int) -> None:
         self._font_pt = pt
@@ -163,12 +189,103 @@ class MorningTaskCard(QWidget):
             self.task.title,
         )
 
+    def _canvas(self) -> MorningReviewCanvas | None:
+        widget = self.parentWidget()
+        while widget is not None:
+            if getattr(widget, "screen_id", None) == "morning_review":
+                return widget  # type: ignore[return-value]
+            widget = widget.parentWidget()
+        return None
+
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.task is not None:
+            self._drag_start = None
+            self._dragging = False
             self.double_clicked.emit(self.task.id)
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.task is not None:
+            self._drag_start = event.position().toPoint()
+            self._dragging = False
+            self.raise_()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _lift_to_canvas(self) -> MorningReviewCanvas | None:
+        canvas = self._canvas()
+        if canvas is None or self.task is None:
+            return None
+        if self.parentWidget() is not canvas:
+            global_top = self.mapToGlobal(QPoint(0, 0))
+            if canvas.grid.indexOf(self) >= 0:
+                placeholder = QWidget()
+                placeholder.setFixedSize(self._tw, self._th)
+                canvas.grid.removeWidget(self)
+                canvas.grid.addWidget(
+                    placeholder, 1, 1, alignment=Qt.AlignmentFlag.AlignHCenter
+                )
+                canvas._card_placeholder = placeholder
+            self.setParent(canvas)
+            self.move(canvas.mapFromGlobal(global_top))
+            self.show()
+            self.raise_()
+            self.grabMouse()
+            canvas._swipe_armed = False
+            canvas._press_pos = None
+        return canvas
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_start is None or self.task is None:
+            return
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        delta = event.position().toPoint() - self._drag_start
+        if not self._dragging and delta.manhattanLength() < 8:
+            return
+        first = not self._dragging
+        self._dragging = True
+        canvas = self._lift_to_canvas() if first else self._canvas()
+        if canvas is None:
+            return
+        if first and QWidget.mouseGrabber() is not self:
+            self.grabMouse()
+        new_pos = self.mapToParent(event.position().toPoint()) - self._drag_start
+        x = max(0, min(new_pos.x(), max(0, canvas.width() - self._tw)))
+        y = max(0, min(new_pos.y(), max(0, canvas.height() - self._th // 2)))
+        self.move(int(x), int(y))
+        self.raise_()
+        center = self.mapToGlobal(self.rect().center())
+        bottom = self.mapToGlobal(QPoint(self.width() // 2, self.height() - 2))
+        action = canvas.action_at_global(center) or canvas.action_at_global(bottom)
+        canvas.set_drop_highlight(action)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if QWidget.mouseGrabber() is self:
+            self.releaseMouse()
+        canvas = self._canvas()
+        if self._dragging and canvas is not None:
+            center = self.mapToGlobal(self.rect().center())
+            bottom = self.mapToGlobal(QPoint(self.width() // 2, self.height() - 2))
+            action = canvas.action_at_global(center) or canvas.action_at_global(bottom)
+            canvas.set_drop_highlight(None)
+            self._drag_start = None
+            self._dragging = False
+            if action:
+                canvas._on_action(action)
+            else:
+                canvas._ensure_card_in_grid()
+            event.accept()
+            return
+        self._drag_start = None
+        self._dragging = False
+        super().mouseReleaseEvent(event)
 
 
 class MorningReviewCanvas(QWidget):
@@ -183,6 +300,7 @@ class MorningReviewCanvas(QWidget):
         self._swipe_armed = False
         self._font_pt = load_font_pt()
         self._buttons: dict[str, MorningButton] = {}
+        self._card_placeholder: QWidget | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -296,6 +414,28 @@ class MorningReviewCanvas(QWidget):
         if hasattr(self.main, "apply_morning_review_action"):
             self.main.apply_morning_review_action(action)
 
+    def action_at_global(self, global_pos: QPoint) -> str | None:
+        for action, btn in self._buttons.items():
+            if not btn.isVisible() or not btn.isEnabled():
+                continue
+            local = btn.mapFromGlobal(global_pos)
+            if btn.rect().contains(local):
+                return action
+        return None
+
+    def set_drop_highlight(self, action: str | None) -> None:
+        for key, btn in self._buttons.items():
+            btn.set_drop_highlight(key == action)
+
+    def _ensure_card_in_grid(self) -> None:
+        if self._card_placeholder is not None:
+            self.grid.removeWidget(self._card_placeholder)
+            self._card_placeholder.deleteLater()
+            self._card_placeholder = None
+        if self.grid.indexOf(self.card) < 0:
+            self.grid.addWidget(self.card, 1, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.card.show()
+
     def _on_card_double(self, task_id: str) -> None:
         if hasattr(self.main, "edit_task"):
             self.main.edit_task(task_id)
@@ -306,6 +446,7 @@ class MorningReviewCanvas(QWidget):
         self.layout().setContentsMargins(left_m, 8, right_m, 8)
         tasks = self.main.visible_tasks() if hasattr(self.main, "visible_tasks") else []
         task = current_inbox_task(tasks)
+        self._ensure_card_in_grid()
         self.card.set_task(task)
         enabled = task is not None
         for btn in self._buttons.values():
