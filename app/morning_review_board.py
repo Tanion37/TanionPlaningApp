@@ -42,7 +42,8 @@ from .morning_review import (
     task_font_pt,
     task_size_for_font,
 )
-from .tags import ACTUAL_TAG, DONE_TAG, IMPORTANT_TAG, URGENT_TAG, display_symbol
+from .tags import ACTUAL_TAG, DONE_TAG, IMPORTANT_TAG, URGENT_TAG, display_symbol, tags_to_cell
+from .widgets import TagBar
 
 
 class MorningButton(QPushButton):
@@ -187,6 +188,8 @@ class MorningTaskCard(QWidget):
         if not font.exactMatch():
             font = QFont("Segoe UI", self._font_pt)
         painter.setFont(font)
+        tags_text = tags_to_cell(self.task.tags)
+        label = f"{tags_text} {self.task.title}".strip()
         painter.drawText(
             self.rect().adjusted(8, top, -8, -6),
             int(
@@ -194,7 +197,7 @@ class MorningTaskCard(QWidget):
                 | Qt.AlignmentFlag.AlignVCenter
                 | Qt.TextFlag.TextWordWrap
             ),
-            self.task.title,
+            label,
         )
 
     def _canvas(self) -> MorningReviewCanvas | None:
@@ -234,7 +237,7 @@ class MorningTaskCard(QWidget):
                 placeholder.setFixedSize(self._tw, self._th)
                 canvas.grid.removeWidget(self)
                 canvas.grid.addWidget(
-                    placeholder, 1, 1, alignment=Qt.AlignmentFlag.AlignHCenter
+                    placeholder, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter
                 )
                 canvas._card_placeholder = placeholder
             self.setParent(canvas)
@@ -268,8 +271,12 @@ class MorningTaskCard(QWidget):
         self.raise_()
         center = self.mapToGlobal(self.rect().center())
         bottom = self.mapToGlobal(QPoint(self.width() // 2, self.height() - 2))
-        action = canvas.action_at_global(center) or canvas.action_at_global(bottom)
+        tag = canvas.tag_at_global(center) or canvas.tag_at_global(bottom)
+        action = None if tag else (
+            canvas.action_at_global(center) or canvas.action_at_global(bottom)
+        )
         canvas.set_drop_highlight(action)
+        canvas.set_tag_highlight(tag)
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -281,11 +288,17 @@ class MorningTaskCard(QWidget):
         if self._dragging and canvas is not None:
             center = self.mapToGlobal(self.rect().center())
             bottom = self.mapToGlobal(QPoint(self.width() // 2, self.height() - 2))
-            action = canvas.action_at_global(center) or canvas.action_at_global(bottom)
+            tag = canvas.tag_at_global(center) or canvas.tag_at_global(bottom)
+            action = None if tag else (
+                canvas.action_at_global(center) or canvas.action_at_global(bottom)
+            )
             canvas.set_drop_highlight(None)
+            canvas._restore_tag_highlight()
             self._drag_start = None
             self._dragging = False
-            if action:
+            if tag and self.task is not None:
+                canvas._on_tag_drop(self.task.id, tag)
+            elif action:
                 canvas._on_action(action)
             else:
                 canvas._ensure_card_in_grid()
@@ -293,6 +306,8 @@ class MorningTaskCard(QWidget):
             return
         self._drag_start = None
         self._dragging = False
+        if self.task is not None and canvas is not None:
+            canvas._on_card_click(self.task.id)
         super().mouseReleaseEvent(event)
 
 
@@ -311,8 +326,13 @@ class MorningReviewCanvas(QWidget):
         self._card_placeholder: QWidget | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(8)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.content = QWidget()
+        self._content_layout = QVBoxLayout(self.content)
+        self._content_layout.setContentsMargins(8, 8, 8, 8)
+        self._content_layout.setSpacing(8)
 
         zoom_row = QHBoxLayout()
         zoom_row.addStretch(1)
@@ -333,7 +353,7 @@ class MorningReviewCanvas(QWidget):
         self.btn_plus.clicked.connect(lambda: self._nudge_font(FONT_STEP))
         zoom_row.addWidget(self.btn_minus)
         zoom_row.addWidget(self.btn_plus)
-        outer.addLayout(zoom_row)
+        self._content_layout.addLayout(zoom_row)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -344,7 +364,14 @@ class MorningReviewCanvas(QWidget):
         self.grid = QGridLayout(self.inner)
         self.grid.setContentsMargins(12, 4, 12, 12)
         self.scroll.setWidget(self.inner)
-        outer.addWidget(self.scroll, 1)
+        self._content_layout.addWidget(self.scroll, 1)
+        outer.addWidget(self.content, 1)
+
+        self.tag_bar = TagBar(self)
+        self.tag_bar.tag_clicked.connect(self.main.on_tag_pick)
+        self.tag_bar.order_changed.connect(self.main.on_tag_order_changed)
+        outer.addWidget(self.tag_bar)
+        self.setProperty("tag_bar", self.tag_bar)
 
         urgent = display_symbol(URGENT_TAG)
         important = display_symbol(IMPORTANT_TAG)
@@ -360,22 +387,21 @@ class MorningReviewCanvas(QWidget):
         self._top_layout.addWidget(self.btn_gorit)
         self._top_layout.addWidget(self.btn_nuzhno)
         self._top_layout.addWidget(self.btn_mozhno)
-        self.grid.addWidget(top, 0, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.grid.addWidget(top, 0, 1, alignment=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
 
         self.card = MorningTaskCard(self.inner)
         self.card.double_clicked.connect(self._on_card_double)
-        self.grid.addWidget(self.card, 1, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.grid.addWidget(self.card, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
 
         left = QWidget()
         self._left_layout = QVBoxLayout(left)
         self._left_layout.setContentsMargins(0, 0, 0, 0)
         for name in MORNING_EXECUTORS:
             self._left_layout.addWidget(self._make_action(executor_action(name), name))
-        self._left_layout.addStretch(1)
-        self.grid.addWidget(left, 2, 0, 4, 1, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        self.grid.addWidget(left, 1, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         self.btn_done = self._make_action(ACTION_DONE, f"ВЫПОЛНЕНА {done}")
-        self.grid.addWidget(self.btn_done, 2, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.grid.addWidget(self.btn_done, 2, 1, alignment=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
         right = QWidget()
         self._right_layout = QVBoxLayout(right)
@@ -384,13 +410,15 @@ class MorningReviewCanvas(QWidget):
         self._right_layout.addWidget(self._make_action(ACTION_WEEK, "НЕДЕЛЯ"))
         self._right_layout.addWidget(self._make_action(ACTION_MONTH, "МЕСЯЦ"))
         self._right_layout.addWidget(self._make_action(ACTION_BACKLOG, "БЕКЛОГ"))
-        self._right_layout.addStretch(1)
-        self.grid.addWidget(right, 2, 2, 4, 1, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.grid.addWidget(right, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
+        self.inner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.grid.setColumnStretch(0, 1)
         self.grid.setColumnStretch(1, 0)
         self.grid.setColumnStretch(2, 1)
-        self.grid.setRowStretch(3, 1)
+        self.grid.setRowStretch(0, 1)
+        self.grid.setRowStretch(1, 0)
+        self.grid.setRowStretch(2, 1)
 
         self._apply_font()
 
@@ -430,6 +458,27 @@ class MorningReviewCanvas(QWidget):
         if hasattr(self.main, "apply_morning_review_action"):
             self.main.apply_morning_review_action(action)
 
+    def _on_tag_drop(self, task_id: str, tag_key: str) -> None:
+        if hasattr(self.main, "apply_action_to_task"):
+            self.main.apply_action_to_task(task_id, tag_key)
+
+    def _on_card_click(self, task_id: str) -> None:
+        if hasattr(self.main, "on_task_clicked"):
+            self.main.on_task_clicked(task_id)
+
+    def tag_at_global(self, global_pos: QPoint) -> str | None:
+        return self.tag_bar.tag_at_global(global_pos)
+
+    def set_tag_highlight(self, key: str | None) -> None:
+        self.tag_bar.set_highlight(key)
+
+    def _restore_tag_highlight(self) -> None:
+        pm = getattr(self.main, "paint_mode", None)
+        if pm and pm[0] == "tag":
+            self.set_tag_highlight(pm[1])
+        else:
+            self.set_tag_highlight(None)
+
     def action_at_global(self, global_pos: QPoint) -> str | None:
         for action, btn in self._buttons.items():
             if not btn.isVisible() or not btn.isEnabled():
@@ -449,7 +498,7 @@ class MorningReviewCanvas(QWidget):
             self._card_placeholder.deleteLater()
             self._card_placeholder = None
         if self.grid.indexOf(self.card) < 0:
-            self.grid.addWidget(self.card, 1, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+            self.grid.addWidget(self.card, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         self.card.show()
 
     def _on_card_double(self, task_id: str) -> None:
@@ -459,7 +508,7 @@ class MorningReviewCanvas(QWidget):
     def rebuild(self) -> None:
         on_left = bool(getattr(self.main, "_controls_on_left", False))
         left_m, right_m = content_side_margins(on_left, base=8)
-        self.layout().setContentsMargins(left_m, 8, right_m, 8)
+        self._content_layout.setContentsMargins(left_m, 8, right_m, 0)
         tasks = self.main.visible_tasks() if hasattr(self.main, "visible_tasks") else []
         task = current_inbox_task(tasks)
         self._ensure_card_in_grid()
@@ -468,6 +517,9 @@ class MorningReviewCanvas(QWidget):
         for btn in self._buttons.values():
             btn.setEnabled(enabled)
         self._apply_font()
+        self.tag_bar.rebuild_circles()
+        self.tag_bar.set_active_filter(getattr(self.main, "filter_tag", None))
+        self._restore_tag_highlight()
 
     def _host_press(self, event) -> None:  # noqa: ANN001
         self.mousePressEvent(event)

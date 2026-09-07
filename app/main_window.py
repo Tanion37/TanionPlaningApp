@@ -1546,6 +1546,22 @@ class MainWindow(QMainWindow):
     def _is_morning_screen(self) -> bool:
         return self._current_screen_id() == "morning_review"
 
+    def _set_all_tag_highlights(self, key: str | None) -> None:
+        for board in self.boards:
+            board.tag_bar.set_highlight(key)
+        self.day_board.set_tag_highlight(key)
+        self.morning_board.set_tag_highlight(key)
+
+    def _rebuild_all_tag_bars(self) -> None:
+        active = self.filter_tag
+        for board in self.boards:
+            board.tag_bar.rebuild_circles()
+            board.tag_bar.set_active_filter(active)
+        self.day_board.tag_bar.rebuild_circles()
+        self.day_board.tag_bar.set_active_filter(active)
+        self.morning_board.tag_bar.rebuild_circles()
+        self.morning_board.tag_bar.set_active_filter(active)
+
     def _is_lists_screen(self) -> bool:
         return self._current_screen_id() == "lists"
 
@@ -1604,12 +1620,7 @@ class MainWindow(QMainWindow):
         self.btn_clear_filter.show()
 
     def on_tag_order_changed(self) -> None:
-        for board in self.boards:
-            active = self.filter_tag
-            board.tag_bar.rebuild_circles()
-            board.tag_bar.set_active_filter(active)
-        self.day_board.tag_bar.rebuild_circles()
-        self.day_board.tag_bar.set_active_filter(self.filter_tag)
+        self._rebuild_all_tag_bars()
 
     def on_tag_filter(self, tag_key: str) -> None:
         key = canonicalize_tag_key(tag_key)
@@ -1626,9 +1637,7 @@ class MainWindow(QMainWindow):
     def clear_paint_mode(self) -> None:
         self.paint_mode = None
         self.set_action_highlight(None)
-        for board in self.boards:
-            board.tag_bar.set_highlight(None)
-        self.day_board.set_tag_highlight(None)
+        self._set_all_tag_highlights(None)
         self.day_board.set_priority_highlight(None)
         self.day_board.set_executor_highlight(None)
         QApplication.restoreOverrideCursor()
@@ -1655,9 +1664,7 @@ class MainWindow(QMainWindow):
         self.set_action_highlight(None)
         self.day_board.set_priority_highlight(None)
         self.day_board.set_executor_highlight(None)
-        for board in self.boards:
-            board.tag_bar.set_highlight(key)
-        self.day_board.set_tag_highlight(key)
+        self._set_all_tag_highlights(key)
         QApplication.restoreOverrideCursor()
         QApplication.setOverrideCursor(Qt.CursorShape.PointingHandCursor)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1672,9 +1679,7 @@ class MainWindow(QMainWindow):
             return
         self.paint_mode = ("priority", section)
         self.set_action_highlight(None)
-        for board in self.boards:
-            board.tag_bar.set_highlight(None)
-        self.day_board.set_tag_highlight(None)
+        self._set_all_tag_highlights(None)
         self.day_board.set_executor_highlight(None)
         self.day_board.set_priority_highlight(section)
         QApplication.restoreOverrideCursor()
@@ -1688,9 +1693,7 @@ class MainWindow(QMainWindow):
             return
         self.paint_mode = ("action", action_key)
         self.set_action_highlight(action_key)
-        for board in self.boards:
-            board.tag_bar.set_highlight(None)
-        self.day_board.set_tag_highlight(None)
+        self._set_all_tag_highlights(None)
         self.day_board.set_priority_highlight(None)
         self.day_board.set_executor_highlight(None)
         QApplication.restoreOverrideCursor()
@@ -1710,9 +1713,7 @@ class MainWindow(QMainWindow):
             return
         self.paint_mode = ("executor", who)
         self.set_action_highlight(None)
-        for board in self.boards:
-            board.tag_bar.set_highlight(None)
-        self.day_board.set_tag_highlight(None)
+        self._set_all_tag_highlights(None)
         self.day_board.set_priority_highlight(None)
         self.day_board.set_executor_highlight(who)
         QApplication.restoreOverrideCursor()
