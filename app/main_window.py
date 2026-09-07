@@ -44,6 +44,7 @@ from .day_tasks import (
 )
 from .day_tasks_board import DayTasksCanvas
 from .executors_store import DEFAULT_EXECUTOR, DEMO_EXECUTORS, ExecutorsStore
+from .morning_review_board import MorningReviewCanvas
 from .layout_metrics import content_left, content_right
 from .lists_board import ListsCanvas
 from .lists_store import ListsStore
@@ -1144,11 +1145,15 @@ class MainWindow(QMainWindow):
         self.day_board = DayTasksCanvas(self)
         self.day_board.swipe_callback = self._on_swipe
         self.stack.addWidget(self.day_board)
+        self.morning_board = MorningReviewCanvas(self)
+        self.morning_board.swipe_callback = self._on_swipe
+        self.stack.addWidget(self.morning_board)
         self.screen_titles: list[tuple[str, str]] = [
             ("logs", "Логи"),
             ("backlog", "Бэклог"),
             ("lists", "Списки"),
             ("day_tasks", "Задачи дня"),
+            ("morning_review", "Утренний разбор"),
         ]
         for screen_id, title, _fn in SCREENS:
             board = BoardCanvas(store, screen_id, self)
@@ -1314,7 +1319,7 @@ class MainWindow(QMainWindow):
             refresh_inbox_tags(self.store.tasks)
             self._roll_periodic_copies()
             self.store.save()
-        day_index = 3
+        day_index = self._screen_index("day_tasks")
         self.stack.setCurrentIndex(day_index)
         self._update_screen_label(day_index)
         self.reload_boards()
@@ -1489,23 +1494,38 @@ class MainWindow(QMainWindow):
         self._sync_day_controls_visibility()
         self._sync_history_buttons()
 
+    def _screen_index(self, screen_id: str) -> int:
+        for i, (sid, _title) in enumerate(self.screen_titles):
+            if sid == screen_id:
+                return i
+        return -1
+
+    def _current_screen_id(self) -> str:
+        idx = self.stack.currentIndex()
+        if 0 <= idx < len(self.screen_titles):
+            return self.screen_titles[idx][0]
+        return ""
+
+    def _board_for_screen(self, screen_id: str):
+        if screen_id == "logs":
+            return self.logs_board
+        if screen_id == "backlog":
+            return self.backlog_board
+        if screen_id == "lists":
+            return self.lists_board
+        if screen_id == "day_tasks":
+            return self.day_board
+        if screen_id == "morning_review":
+            return self.morning_board
+        for board in self.boards:
+            if board.screen_id == screen_id:
+                return board
+        return None
+
     def _rebuild_visible_board(self) -> None:
-        index = self.stack.currentIndex()
-        if index == 0:
-            self.logs_board.rebuild()
-            return
-        if index == 1:
-            self.backlog_board.rebuild()
-            return
-        if index == 2:
-            self.lists_board.rebuild()
-            return
-        if index == 3:
-            self.day_board.rebuild()
-            return
-        board_idx = index - 4
-        if 0 <= board_idx < len(self.boards):
-            self.boards[board_idx].rebuild()
+        board = self._board_for_screen(self._current_screen_id())
+        if board is not None:
+            board.rebuild()
 
     def _update_screen_label(self, index: int) -> None:
         n = len(self.screen_titles)
@@ -1521,10 +1541,13 @@ class MainWindow(QMainWindow):
         self._rebuild_visible_board()
 
     def _is_day_screen(self) -> bool:
-        return self.stack.currentIndex() == 3
+        return self._current_screen_id() == "day_tasks"
+
+    def _is_morning_screen(self) -> bool:
+        return self._current_screen_id() == "morning_review"
 
     def _is_lists_screen(self) -> bool:
-        return self.stack.currentIndex() == 2
+        return self._current_screen_id() == "lists"
 
     def _sync_new_button(self) -> None:
         if self._is_lists_screen():
@@ -2144,6 +2167,97 @@ class MainWindow(QMainWindow):
             self.reload_boards()
             self._sync_history_buttons()
 
+    def apply_morning_review_action(self, action: str) -> None:
+        from .morning_review import (
+            ACTION_BACKLOG,
+            ACTION_DONE,
+            ACTION_GORIT,
+            ACTION_MONTH,
+            ACTION_MOZHNO,
+            ACTION_NUZHNO,
+            ACTION_TOMORROW,
+            ACTION_WEEK,
+            apply_morning_action,
+            current_inbox_task,
+        )
+
+        task = current_inbox_task(self.visible_tasks())
+        if not task:
+            return
+        before_state = snapshot_dict(task)
+        before_text = format_task_snapshot(task)
+        apply_morning_action(task, action)
+        if self.demo_mode:
+            self.reload_boards()
+            return
+        self.request_save()
+        if action == ACTION_DONE:
+            append_log(
+                "completed",
+                task,
+                before=before_text,
+                source="app",
+                before_state=before_state,
+            )
+        elif action == ACTION_GORIT:
+            append_log(
+                "moved",
+                task,
+                before=before_text,
+                detail="Горит",
+                source="app",
+                before_state=before_state,
+            )
+        elif action == ACTION_NUZHNO:
+            append_log(
+                "moved",
+                task,
+                before=before_text,
+                detail="Нужно",
+                source="app",
+                before_state=before_state,
+            )
+        elif action == ACTION_MOZHNO:
+            append_log(
+                "moved",
+                task,
+                before=before_text,
+                detail="Можно",
+                source="app",
+                before_state=before_state,
+            )
+        elif action == ACTION_TOMORROW:
+            self._log_action_result(task, TOMORROW_ACTION, before_text, before_state)
+        elif action == ACTION_WEEK:
+            self._log_action_result(task, WEEK_ACTION, before_text, before_state)
+        elif action == ACTION_MONTH:
+            self._log_action_result(task, MONTH_ACTION, before_text, before_state)
+        elif action == ACTION_BACKLOG:
+            self._log_action_result(task, BACKLOG_TAG, before_text, before_state)
+        elif action.startswith("executor:"):
+            name = action.split(":", 1)[1]
+            append_log(
+                "changed",
+                task,
+                before=before_text,
+                detail=f"исполнитель {name}",
+                source="app",
+                before_state=before_state,
+            )
+        else:
+            append_log(
+                "changed",
+                task,
+                before=before_text,
+                detail=action,
+                source="app",
+                before_state=before_state,
+            )
+        self._note_task_change(task, before=before_state)
+        self._last_paint_key = None
+        self.reload_boards()
+        self._sync_history_buttons()
+
     def _log_action_result(
         self,
         task: Task,
@@ -2240,11 +2354,9 @@ class MainWindow(QMainWindow):
     def on_annotation_selected(self, ann_id: str) -> None:
         self.selected_ann_id = ann_id or None
         self.selected_task_id = None
-        idx = self.stack.currentIndex()
-        board_idx = idx - 4
-        if board_idx < 0 or board_idx >= len(self.boards):
+        board = self._board_for_screen(self._current_screen_id())
+        if board is None or not hasattr(board, "label_blocks"):
             return
-        board = self.boards[board_idx]
         for lid, w in board.label_blocks.items():
             w.set_selected(lid == ann_id)
         for rid, w in board.rect_blocks.items():
@@ -2333,10 +2445,9 @@ class MainWindow(QMainWindow):
         self.btn_rect.set_active(self.draw_rect_mode)
 
     def begin_label_at(self, screen_id: str, pos: QPoint) -> None:
-        board_idx = self.stack.currentIndex() - 4
-        if board_idx < 0 or board_idx >= len(self.boards):
+        board = self._board_for_screen(screen_id)
+        if board is None or not hasattr(board, "label_blocks"):
             return
-        board = self.boards[board_idx]
         if self._label_editor is not None:
             self._label_editor.deleteLater()
         editor = QLineEdit(board)
@@ -2497,7 +2608,7 @@ class MainWindow(QMainWindow):
         if self.demo_mode:
             QMessageBox.information(self, "ДЕМО", "В демо-режиме создание задач отключено.")
             return
-        day_screen = self._is_day_screen()
+        day_screen = self._is_day_screen() or self._is_morning_screen()
         dlg_kwargs: dict = {
             "project_names": self._project_names(),
             "all_tasks": self.visible_tasks(),
