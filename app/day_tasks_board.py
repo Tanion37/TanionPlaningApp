@@ -1,4 +1,4 @@
-"""Экран «Задачи дня»: Входящие | Горит/Нужно/Можно | ДЕНЬ."""
+"""Экран «Задачи дня»: Входящие | Контроль | Горит/Нужно/Можно | ДЕНЬ."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .day_tasks import (
     SECTION_NUZHNO,
     UNTAGGED_SECTION,
     apply_priority_section,
+    control_tasks,
     day_tag_counts,
     executor_sections,
     inbox_tasks,
@@ -196,6 +197,33 @@ class DayTasksCanvas(QWidget):
         inbox_l.addWidget(self.inbox_scroll, 1)
         self.root.addWidget(self.inbox_wrap)
 
+        # Контроль
+        self.control_wrap = QWidget()
+        self.control_wrap.setFixedWidth(COL_W)
+        control_l = QVBoxLayout(self.control_wrap)
+        control_l.setContentsMargins(0, 0, 0, 0)
+        control_title = QLabel("Контроль")
+        control_title.setFont(f)
+        control_title.setCursor(Qt.CursorShape.PointingHandCursor)
+        control_title.setToolTip(
+            "Кисть Завтра / Неделя / Месяц / Бэклог / Входящие / исполнитель — ко всем задачам раздела"
+        )
+        control_title.mousePressEvent = lambda event: self._on_heading_press(  # type: ignore[method-assign]
+            event, "control", "control"
+        )
+        control_l.addWidget(control_title)
+        self.control_scroll = QScrollArea()
+        self.control_scroll.setWidgetResizable(True)
+        self.control_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.control_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.control_inner = QWidget()
+        self.control_layout = QVBoxLayout(self.control_inner)
+        self.control_layout.setContentsMargins(0, 0, 0, 0)
+        self.control_layout.setSpacing(6)
+        self.control_scroll.setWidget(self.control_inner)
+        control_l.addWidget(self.control_scroll, 1)
+        self.root.addWidget(self.control_wrap)
+
         # Приоритет
         self.prio_wrap = QWidget()
         self.prio_wrap.setFixedWidth(COL_W + 8)
@@ -274,12 +302,16 @@ class DayTasksCanvas(QWidget):
         left, right = content_side_margins(on_left)
         self.root.setContentsMargins(left, 8, right, 8)
 
-    def _estimate_day_width(self, *, has_inbox: bool, controls_on_left: bool) -> int:
-        """Ширина зоны ДЕНЬ без ожидания пересчёта layout после hide inbox."""
+    def _estimate_day_width(
+        self, *, has_inbox: bool, has_control: bool, controls_on_left: bool
+    ) -> int:
+        """Ширина зоны ДЕНЬ без ожидания пересчёта layout после hide колонок."""
         left, right = content_side_margins(controls_on_left)
         total = max(self.width(), self.body.width(), 400)
         used = left + right
         if has_inbox:
+            used += COL_W + COL_GAP
+        if has_control:
             used += COL_W + COL_GAP
         used += (COL_W + 8) + COL_GAP  # Приоритет
         return max(COL_W, total - used)
@@ -340,7 +372,9 @@ class DayTasksCanvas(QWidget):
         tasks = without_day_hidden(self.main.visible_tasks())
 
         inbox = inbox_tasks(tasks)
+        control = control_tasks(tasks)
         has_inbox = bool(inbox)
+        has_control = bool(control)
         # панель слева только при непустых входящих на этом экране
         want_left = has_inbox and (
             self.main._is_day_screen() if hasattr(self.main, "_is_day_screen") else True
@@ -362,6 +396,18 @@ class DayTasksCanvas(QWidget):
             self.inbox_layout.addWidget(self._make_block(task))
         self.inbox_layout.addStretch(1)
         self._section_ids[("inbox", "inbox")] = [t.id for t in inbox]
+
+        # Контроль
+        while self.control_layout.count():
+            item = self.control_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self.control_wrap.setVisible(has_control)
+        for task in control:
+            self.control_layout.addWidget(self._make_block(task))
+        self.control_layout.addStretch(1)
+        self._section_ids[("control", "control")] = [t.id for t in control]
 
         # Приоритет
         for sec in (self.sec_gorit, self.sec_nuzhno, self.sec_mozhno):
@@ -396,9 +442,11 @@ class DayTasksCanvas(QWidget):
         exec_names = {name for name, _ in exec_sections}
         all_sections = list(exec_sections) + list(tag_sections)
         avail_h = max(200, self.day_scroll.viewport().height() - 8)
-        avail_w = self._estimate_day_width(has_inbox=has_inbox, controls_on_left=want_left)
+        avail_w = self._estimate_day_width(
+            has_inbox=has_inbox, has_control=has_control, controls_on_left=want_left
+        )
         viewport_w = max(0, self.day_scroll.viewport().width() - 8)
-        if has_inbox:
+        if has_inbox or has_control:
             # при видимых входящих viewport обычно актуален
             if viewport_w > 0:
                 avail_w = max(avail_w, viewport_w)
@@ -503,7 +551,7 @@ class DayTasksCanvas(QWidget):
             and not self._defer_inbox_hook
             and hasattr(self.main, "on_day_inbox_changed")
         ):
-            self.main.on_day_inbox_changed(has_inbox)
+            self.main.on_day_inbox_changed(has_inbox, has_control)
 
     def _on_section_drop(self, task_id: str, section: str) -> None:
         if self.main.demo_mode:

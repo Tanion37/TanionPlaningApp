@@ -12,6 +12,7 @@ from .tags import (
     ACTUAL_TAG,
     BACKLOG_TAG,
     CANCEL_TAG,
+    CONTROL_TAG,
     DONE_TAG,
     IMPORTANT_TAG,
     INBOX_TAG,
@@ -33,7 +34,7 @@ def refresh_inbox_tags(tasks: Iterable[Task], today: date | None = None) -> bool
     for task in tasks:
         if task.is_hidden_from_boards():
             continue
-        if task.is_actual() or task.is_backlog():
+        if task.is_actual() or task.is_backlog() or task.is_control():
             continue
         if not is_own_executor(getattr(task, "executor", None)):
             continue
@@ -53,6 +54,23 @@ def inbox_tasks(tasks: Iterable[Task], today: date | None = None) -> list[Task]:
             for t in tasks
             if not t.is_hidden_from_boards()
             and t.is_inbox()
+            and not t.is_control()
+            and is_own_executor(getattr(t, "executor", None))
+            and (t.start_at is None or t.start_at <= today)
+        ],
+        key=lambda t: t.title.casefold(),
+    )
+
+
+def control_tasks(tasks: Iterable[Task], today: date | None = None) -> list[Task]:
+    """Свои задачи с тегом «контроль», которые уже можно смотреть."""
+    today = today or date.today()
+    return sorted(
+        [
+            t
+            for t in tasks
+            if not t.is_hidden_from_boards()
+            and t.is_control()
             and is_own_executor(getattr(t, "executor", None))
             and (t.start_at is None or t.start_at <= today)
         ],
@@ -65,6 +83,8 @@ def priority_section_of(task: Task) -> str | None:
     if task.is_hidden_from_boards():
         return None
     if not is_own_executor(getattr(task, "executor", None)):
+        return None
+    if task.is_control():
         return None
     if not task.is_actual():
         return None
@@ -102,6 +122,7 @@ def priority_tasks_flat(tasks: Iterable[Task]) -> list[Task]:
 def apply_priority_section(task: Task, section: str) -> None:
     """Мутация тегов при drop в Горит/Нужно/Можно."""
     task.remove_tag(INBOX_TAG)
+    task.remove_tag(CONTROL_TAG)
     task.add_tag(ACTUAL_TAG)
     if section == SECTION_GORIT:
         task.add_tag(IMPORTANT_TAG)
@@ -212,6 +233,8 @@ def day_tag_counts(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
         if task.is_hidden_from_boards() or not task.is_actual():
             continue
         if not is_own_executor(getattr(task, "executor", None)):
+            continue
+        if task.is_control():
             continue
         tags = non_system_tags_of(task)
         if not tags:

@@ -120,6 +120,11 @@ class Task:
 
         return self.has_tag(INBOX_TAG)
 
+    def is_control(self) -> bool:
+        from .tags import CONTROL_TAG
+
+        return self.has_tag(CONTROL_TAG)
+
     def is_actual(self) -> bool:
         from .tags import ACTUAL_TAG
 

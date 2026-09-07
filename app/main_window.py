@@ -387,6 +387,13 @@ def _demo_tasks(today: date | None = None) -> list[Task]:
             executor="Кот",
         ),
         Task(
+            id="demo-32b",
+            title="Проверить, что Кактус нарисовал карту",
+            project="Мифология",
+            tags=[CONTROL_TAG],
+            start_at=today,
+        ),
+        Task(
             id="demo-33",
             title="Ответить всем «ок» и жить дальше",
             project="Переписка",
@@ -1539,12 +1546,15 @@ class MainWindow(QMainWindow):
             self._controls_on_left = False
             self._place_floating_controls()
 
-    def on_day_inbox_changed(self, has_inbox: bool) -> None:
+    def on_day_inbox_changed(self, has_inbox: bool, has_control: bool = False) -> None:
         want_left = has_inbox and self._is_day_screen()
         side_changed = want_left != self._controls_on_left
         prev = getattr(self, "_day_has_inbox", None)
         inbox_changed = prev is not None and prev != has_inbox
+        prev_control = getattr(self, "_day_has_control", None)
+        control_changed = prev_control is not None and prev_control != has_control
         self._day_has_inbox = has_inbox
+        self._day_has_control = has_control
         if side_changed:
             self._controls_on_left = want_left
             self._place_floating_controls()
@@ -1552,8 +1562,7 @@ class MainWindow(QMainWindow):
             self._place_floating_controls()
         if self._is_day_screen():
             self.day_board._apply_side_margins(want_left)
-            # после hide/show входящих ширина ДЕНЬ меняется — пересобрать на следующем тике
-            if side_changed or inbox_changed:
+            if side_changed or inbox_changed or control_changed:
                 QTimer.singleShot(0, self._deferred_day_rebuild)
 
     def _deferred_day_rebuild(self) -> None:
