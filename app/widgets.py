@@ -1083,7 +1083,7 @@ class NewTaskDialog(_EnterAcceptDialog):
         self.period = QComboBox()
         self.period.addItems(list(REMIND_PERIODS))
         self.period.setToolTip(
-            "Новая копия с теми же полями; даты сдвигаются. "
+            "Новая копия по сетке от первичной даты (не от выполнения). "
             "Пока висит открытый экземпляр серии – следующая не появится."
         )
         form.addRow("Периодичность", self.period)
@@ -1264,7 +1264,7 @@ class EditTaskDialog(_EnterAcceptDialog):
         if idx >= 0:
             self.period.setCurrentIndex(idx)
         self.period.setToolTip(
-            "Новая копия с теми же полями; даты сдвигаются. "
+            "Новая копия по сетке от первичной даты (не от выполнения). "
             "Пока висит открытый экземпляр серии – следующая не появится."
         )
         form.addRow("Периодичность", self.period)
