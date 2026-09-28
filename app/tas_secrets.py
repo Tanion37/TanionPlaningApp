@@ -21,7 +21,6 @@ def _store_path() -> Path:
     candidates.extend(
         [
             Path(r"D:\CURSOR\TanionAgentSetting") / "secrets_store.py",
-            Path(r"C:\CURSOR\TanionAgentSetting") / "secrets_store.py",
             Path(__file__).resolve().parents[1] / "TanionAgentSetting" / "secrets_store.py",
         ]
     )
