@@ -67,13 +67,22 @@ def reconcile_links(tasks: list[Task]) -> bool:
 
 
 def linked_task_title(tasks: list[Task], task: Task) -> str:
-    prev_id = (task.prev_id or "").strip()
-    if not prev_id:
+    """Имена задач, связанных с этой. У корня — имена следующих узлов."""
+    by_id = {item.id: item for item in tasks}
+    names: list[str] = []
+    for tid in task.after_ids:
+        child = by_id.get(tid)
+        if child is None:
+            continue
+        name = (child.title or "").strip()
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return ", ".join(names)
+    parent = by_id.get((task.prev_id or "").strip())
+    if parent is None:
         return ""
-    for item in tasks:
-        if item.id == prev_id:
-            return (item.title or "").strip()
-    return ""
+    return (parent.title or "").strip()
 
 
 def add_linked_task(tasks: list[Task], parent: Task, title: str) -> Task | None:

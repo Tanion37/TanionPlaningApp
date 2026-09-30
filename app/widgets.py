@@ -60,7 +60,7 @@ class TaskBlock(QWidget):
         self.setAcceptDrops(True)
         self._drag_start: QPoint | None = None
         self._dragging = False
-        self._composer_open = False
+        self._rows: list[dict] = []
         self._linked_title = ""
         self._refresh_style()
         self._build_chrome()
@@ -85,18 +85,8 @@ class TaskBlock(QWidget):
 
         self._plus_btn = QPushButton("+", self)
         self._plus_btn.setFont(QFont("Segoe UI", 8))
-        self._plus_btn.setToolTip("Вписать имя связанной задачи")
-        self._plus_btn.clicked.connect(self._toggle_composer)
-
-        self._name_edit = QLineEdit(self)
-        self._name_edit.setFont(QFont("Segoe UI", 8))
-        self._name_edit.setPlaceholderText("Имя задачи")
-        self._name_edit.returnPressed.connect(self._emit_add)
-
-        self._add_btn = QPushButton("Добавить", self)
-        self._add_btn.setFont(QFont("Segoe UI", 8))
-        self._add_btn.setToolTip("Создать связанную задачу")
-        self._add_btn.clicked.connect(self._emit_add)
+        self._plus_btn.setToolTip("Добавить поле имени")
+        self._plus_btn.clicked.connect(self._add_row)
 
         self._linked = QLineEdit(self)
         self._linked.setFont(QFont("Segoe UI", 8))
@@ -111,15 +101,12 @@ class TaskBlock(QWidget):
         y += 24
         self._plus_btn.setGeometry(4, y, 22, 22)
         y += 24
-        if self._composer_open:
-            self._name_edit.setGeometry(4, y, TASK_W - 80, 22)
-            self._add_btn.setGeometry(TASK_W - 74, y, 70, 22)
-            self._name_edit.show()
-            self._add_btn.show()
+        for row in self._rows:
+            row["edit"].setGeometry(4, y, TASK_W - 8, 22)
             y += 24
-        else:
-            self._name_edit.hide()
-            self._add_btn.hide()
+            row["add"].setGeometry(4, y, 94, 22)
+            row["del"].setGeometry(102, y, 94, 22)
+            y += 26
         self._linked.setGeometry(4, y, TASK_W - 8, 22)
         y += 26
         self.setFixedSize(TASK_W, y)
@@ -143,15 +130,35 @@ class TaskBlock(QWidget):
             return
         self.role_changed.emit(self.task.id, role)
 
-    def _toggle_composer(self) -> None:
-        self._composer_open = not self._composer_open
+    def _add_row(self) -> None:
+        edit = QLineEdit(self)
+        edit.setFont(QFont("Segoe UI", 8))
+        edit.setPlaceholderText("Имя задачи")
+        add_btn = QPushButton("Добавить", self)
+        del_btn = QPushButton("Удалить", self)
+        for btn in (add_btn, del_btn):
+            btn.setFont(QFont("Segoe UI", 8))
+            btn.setStyleSheet("QPushButton { padding: 0px; }")
+        row = {"edit": edit, "add": add_btn, "del": del_btn}
+        add_btn.clicked.connect(lambda _checked=False, item=row: self._emit_add(item))
+        del_btn.clicked.connect(lambda _checked=False, item=row: self._remove_row(item))
+        edit.returnPressed.connect(lambda item=row: self._emit_add(item))
+        self._rows.append(row)
         self._layout_chrome()
-        if self._composer_open:
-            self._name_edit.setFocus()
-            self.raise_()
+        edit.setFocus()
+        self.raise_()
 
-    def _emit_add(self) -> None:
-        title = self._name_edit.text().strip()
+    def _remove_row(self, row: dict) -> None:
+        if row not in self._rows:
+            return
+        self._rows.remove(row)
+        for key in ("edit", "add", "del"):
+            row[key].hide()
+            row[key].deleteLater()
+        self._layout_chrome()
+
+    def _emit_add(self, row: dict) -> None:
+        title = row["edit"].text().strip()
         if not title:
             return
         self.add_linked.emit(self.task.id, title)
