@@ -2386,17 +2386,31 @@ class MainWindow(QMainWindow):
         self.reload_boards()
         self._sync_history_buttons()
 
-    def on_task_add_linked(self, task_id: str, title: str) -> None:
+    def _find_task_block(self, task_id: str):
+        board = self._board_for_screen(self._current_screen_id())
+        if board is None:
+            return None
+        blocks = getattr(board, "blocks", None)
+        if isinstance(blocks, dict) and task_id in blocks:
+            return blocks[task_id]
+        for block in getattr(board, "_blocks", []):
+            if getattr(block, "task", None) is not None and block.task.id == task_id:
+                return block
+        return None
+
+    def on_task_add_linked(self, task_id: str, title: str, drafts: object = ()) -> None:
         from .task_graph import add_linked_task
 
         parent = self._find_task(task_id)
         name = (title or "").strip()
         if parent is None or not name:
             return
+        pending = [str(item) for item in (drafts or [])]
         tasks = self.demo_tasks if self.demo_mode else self.store.tasks
         if self.demo_mode:
             add_linked_task(tasks, parent, name)
             self.reload_boards()
+            self._restore_link_drafts(task_id, pending)
             return
         before = format_task_snapshot(parent)
         before_state = snapshot_dict(parent)
@@ -2423,7 +2437,15 @@ class MainWindow(QMainWindow):
         self.request_save()
         self._last_paint_key = None
         self.reload_boards()
+        self._restore_link_drafts(task_id, pending)
         self._sync_history_buttons()
+
+    def _restore_link_drafts(self, task_id: str, drafts: list[str]) -> None:
+        if not drafts:
+            return
+        block = self._find_task_block(task_id)
+        if block is not None and hasattr(block, "restore_drafts"):
+            block.restore_drafts(drafts)
 
     def on_task_clicked(self, task_id: str) -> None:
         if self.paint_mode:

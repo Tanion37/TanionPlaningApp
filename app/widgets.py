@@ -48,7 +48,7 @@ class TaskBlock(QWidget):
     project_clicked = pyqtSignal(str)  # project name
     clicked = pyqtSignal(str)  # task_id
     role_changed = pyqtSignal(str, str)  # task_id, role
-    add_linked = pyqtSignal(str, str)  # task_id, имя новой связанной задачи
+    add_linked = pyqtSignal(str, str, object)  # task_id, имя, тексты остальных полей
 
     PROJECT_BAND = 16
 
@@ -131,9 +131,14 @@ class TaskBlock(QWidget):
         self.role_changed.emit(self.task.id, role)
 
     def _add_row(self) -> None:
+        row = self._append_row("")
+        row["edit"].setFocus()
+
+    def _append_row(self, text: str) -> dict:
         edit = QLineEdit(self)
         edit.setFont(QFont("Segoe UI", 8))
         edit.setPlaceholderText("Имя задачи")
+        edit.setText(text)
         add_btn = QPushButton("Добавить", self)
         del_btn = QPushButton("Удалить", self)
         for btn in (add_btn, del_btn):
@@ -148,9 +153,20 @@ class TaskBlock(QWidget):
         del_btn.show()
         self._rows.append(row)
         self._layout_chrome()
-        edit.setFocus()
         self.raise_()
         self.updateGeometry()
+        return row
+
+    def restore_drafts(self, texts: list[str]) -> None:
+        """Вернуть поля ввода, которые не были нажаты «Добавить»."""
+        for text in texts:
+            self._append_row(text)
+        for row in self._rows:
+            if not row["edit"].text().strip():
+                row["edit"].setFocus()
+                return
+        if self._rows:
+            self._rows[0]["edit"].setFocus()
 
     def _remove_row(self, row: dict) -> None:
         if row not in self._rows:
@@ -165,7 +181,8 @@ class TaskBlock(QWidget):
         title = row["edit"].text().strip()
         if not title:
             return
-        self.add_linked.emit(self.task.id, title)
+        others = [item["edit"].text() for item in self._rows if item is not row]
+        self.add_linked.emit(self.task.id, title, others)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if watched is self._role and event.type() == QEvent.Type.Wheel:
