@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -28,10 +29,14 @@ from PyQt6.QtWidgets import (
 
 from .colors import border_color, font_color
 from .models import Task, parse_date
+from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
+from .task_graph import FOLLOWER_MAX
 
 TASK_W = 200
 TASK_H = 50
+# Нижняя полоса карточки: роль и число следующих узлов. Утренний разбор масштабирует TASK_H.
+TASK_BLOCK_H = TASK_H + 52
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
 TAG_ICON = 32
@@ -45,23 +50,89 @@ class TaskBlock(QWidget):
     double_clicked = pyqtSignal(str)  # task_id
     project_clicked = pyqtSignal(str)  # project name
     clicked = pyqtSignal(str)  # task_id
+    role_changed = pyqtSignal(str, str)  # task_id, role
+    after_count_changed = pyqtSignal(str, int)  # task_id, сколько узлов после
 
     PROJECT_BAND = 16
 
     def __init__(self, task: Task, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.task = task
-        self.setFixedSize(TASK_W, TASK_H)
+        self.setFixedSize(TASK_W, TASK_BLOCK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setAcceptDrops(True)
         self._drag_start: QPoint | None = None
         self._dragging = False
         self._refresh_style()
+        self._build_chrome()
+        self._sync_chrome()
 
     def update_task(self, task: Task) -> None:
         self.task = task
         self._refresh_style()
+        self._sync_chrome()
         self.update()
+
+    def _build_chrome(self) -> None:
+        chrome_y = TASK_H + 2
+        self._role = QComboBox(self)
+        self._role.setGeometry(4, chrome_y, TASK_W - 8, 22)
+        self._role.setFont(QFont("Segoe UI", 8))
+        self._role.setToolTip("Роль")
+        self._role.addItem("роль", "")
+        for label in role_labels():
+            self._role.addItem(label, label)
+        self._role.currentIndexChanged.connect(self._on_role)
+        self._role.installEventFilter(self)
+
+        self._after_field = QLineEdit(self)
+        self._after_field.setGeometry(4, chrome_y + 24, TASK_W - 30, 22)
+        self._after_field.setFont(QFont("Segoe UI", 8))
+        self._after_field.setReadOnly(True)
+        self._after_field.setToolTip("Сколько карточек идёт сразу после этой")
+        self._after_field.installEventFilter(self)
+
+        self._after_btn = QPushButton("▼", self)
+        self._after_btn.setGeometry(TASK_W - 24, chrome_y + 24, 20, 22)
+        self._after_btn.setFont(QFont("Segoe UI", 8))
+        self._after_btn.setToolTip("Число задач после этой")
+        self._after_btn.clicked.connect(self._open_after_menu)
+
+    def _sync_chrome(self) -> None:
+        role = coerce_role(self.task.role)
+        self._role.blockSignals(True)
+        index = self._role.findData(role)
+        self._role.setCurrentIndex(index if index >= 0 else 0)
+        self._role.blockSignals(False)
+        self._after_field.setText(f"после {self.task.after_count}")
+
+    def _on_role(self, _index: int) -> None:
+        role = coerce_role(self._role.currentData())
+        if role == coerce_role(self.task.role):
+            return
+        self.role_changed.emit(self.task.id, role)
+
+    def _open_after_menu(self) -> None:
+        menu = QMenu(self)
+        for count in range(FOLLOWER_MAX + 1):
+            action = menu.addAction(str(count))
+            action.setData(count)
+        chosen = menu.exec(self._after_btn.mapToGlobal(QPoint(0, self._after_btn.height())))
+        if chosen is None:
+            return
+        count = int(chosen.data())
+        if count == len(self.task.after_ids):
+            return
+        self.after_count_changed.emit(self.task.id, count)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self._role and event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        if watched is self._after_field and event.type() == QEvent.Type.MouseButtonPress:
+            self._open_after_menu()
+            return True
+        return super().eventFilter(watched, event)
 
     def _refresh_style(self) -> None:
         today = date.today()
@@ -85,7 +156,7 @@ class TaskBlock(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(self._bd, 2))
         painter.setBrush(QColor("#FFFFFF"))
-        painter.drawRect(1, 1, TASK_W - 2, TASK_H - 2)
+        painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
 
         project = self._project_name()
         top = 4
@@ -117,7 +188,7 @@ class TaskBlock(QWidget):
             font.setStrikeOut(True)
         painter.setFont(font)
         painter.drawText(
-            self.rect().adjusted(6, top, -6, -4),
+            QRect(6, top, TASK_W - 12, max(1, TASK_H - top - 4)),
             int(
                 Qt.AlignmentFlag.AlignLeft
                 | Qt.AlignmentFlag.AlignVCenter
@@ -187,9 +258,9 @@ class TaskBlock(QWidget):
 
         on_left = bool(getattr(main, "_controls_on_left", False)) if main else False
         min_x = content_left(on_left, base=0)
-        max_x = max(min_x, host.width() - content_right(on_left, base=0) - TASK_W)
+        max_x = max(min_x, host.width() - content_right(on_left, base=0) - self.width())
         x = max(min_x, min(new_pos.x(), max_x))
-        y = max(0, min(new_pos.y(), max(0, host.height() - TASK_H // 2)))
+        y = max(0, min(new_pos.y(), max(0, host.height() - self.height() // 2)))
         self.move(int(x), int(y))
         self.raise_()
 

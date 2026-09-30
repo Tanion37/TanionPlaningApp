@@ -63,6 +63,10 @@ COLUMNS: tuple[str, ...] = (
     "chat_id",
     "source",
     "серия",
+    "роль",
+    "после",
+    "после_id",
+    "пред_id",
 )
 
 HEADER_ALIASES: dict[str, str] = {
@@ -103,6 +107,14 @@ HEADER_ALIASES: dict[str, str] = {
     "серия": "серия",
     "series": "серия",
     "series_id": "серия",
+    "роль": "роль",
+    "role": "роль",
+    "после": "после",
+    "after_count": "после",
+    "после_id": "после_id",
+    "after_ids": "после_id",
+    "пред_id": "пред_id",
+    "prev_id": "пред_id",
 }
 
 
@@ -150,6 +162,24 @@ def _next_id(tasks: list[Task]) -> str:
         if match:
             max_num = max(max_num, int(match.group(1)))
     return f"{max_num + 1:03d}"
+
+
+def _parse_after_count(value) -> int:
+    from .task_graph import parse_count
+
+    return parse_count(value)
+
+
+def _parse_after_ids(value) -> list[str]:
+    from .task_graph import parse_id_list
+
+    return parse_id_list(value)
+
+
+def _dump_after_ids(ids: list[str]) -> str:
+    from .task_graph import dump_id_list
+
+    return dump_id_list(ids)
 
 
 def _header_map(row: tuple) -> dict[str, int]:
@@ -270,6 +300,10 @@ class TaskStore:
                     chat_id=int(chat_id) if chat_id not in (None, "") else None,
                     source=str(_cell(row, mapping, "source") or "xlsx").strip(),
                     series_id=str(_cell(row, mapping, "серия") or "").strip(),
+                    role=str(_cell(row, mapping, "роль") or "").strip(),
+                    after_ids=_parse_after_ids(_cell(row, mapping, "после_id")),
+                    after_count=_parse_after_count(_cell(row, mapping, "после")),
+                    prev_id=str(_cell(row, mapping, "пред_id") or "").strip(),
                 )
             )
         usage = collect_tag_usage(t.tags for t in tasks)
@@ -282,8 +316,11 @@ class TaskStore:
             if _migrate_social_project(task):
                 migrated = True
         from .period_roll import ensure_series_ids
+        from .task_graph import reconcile_links
 
         if ensure_series_ids(tasks):
+            migrated = True
+        if reconcile_links(tasks):
             migrated = True
         self.tasks = tasks
         if unify_project_casing(self.tasks) or migrated:
@@ -346,6 +383,10 @@ class TaskStore:
                         task.chat_id,
                         task.source,
                         getattr(task, "series_id", "") or "",
+                        getattr(task, "role", "") or "",
+                        int(getattr(task, "after_count", 0) or 0),
+                        _dump_after_ids(getattr(task, "after_ids", None) or []),
+                        getattr(task, "prev_id", "") or "",
                     ]
                 )
             write_tags_sheet(wb)
@@ -373,6 +414,10 @@ class TaskStore:
             chat_id=kwargs.get("chat_id"),
             source=kwargs.get("source", "app"),
             series_id=str(kwargs.get("series_id") or "").strip(),
+            role=str(kwargs.get("role") or "").strip(),
+            after_count=int(kwargs.get("after_count") or 0),
+            after_ids=list(kwargs.get("after_ids") or []),
+            prev_id=str(kwargs.get("prev_id") or "").strip(),
         )
         from .period_roll import ensure_task_series
 
