@@ -80,7 +80,7 @@ from .tags import (
 )
 from .widgets import (
     CIRCLE,
-    TASK_H,
+    TASK_BLOCK_H,
     TASK_W,
     CircleButton,
     EditTaskDialog,
@@ -748,8 +748,8 @@ class BoardCanvas(QWidget):
                     by = int(task.pos_y)
                 else:
                     bx, by = stack_x, stack_y
-                    stack_y += TASK_H + 8
-                    if stack_y + TASK_H > top + usable_h:
+                    stack_y += TASK_BLOCK_H + 8
+                    if stack_y + TASK_BLOCK_H > top + usable_h:
                         stack_y = top
                         stack_x += TASK_W + 8
                         if stack_x > max_x:
@@ -818,8 +818,8 @@ class BoardCanvas(QWidget):
                     else:
                         bx = min(x, max_task_x)
                         by = y
-                        y += TASK_H + 8
-                        if y + TASK_H > top + usable_h:
+                        y += TASK_BLOCK_H + 8
+                        if y + TASK_BLOCK_H > top + usable_h:
                             y = top
                             x += TASK_W + col_gap
                             bx = min(x, max_task_x)
@@ -895,6 +895,8 @@ class BoardCanvas(QWidget):
         block.double_clicked.connect(self.main.edit_task)
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
+        block.role_changed.connect(self.main.on_task_role)
+        block.after_count_changed.connect(self.main.on_task_after_count)
         return block
 
     def _rebuild_annotations(self) -> None:
@@ -945,7 +947,7 @@ class BoardCanvas(QWidget):
         task = self.store.get(task_id)
         if not task:
             return
-        if y + TASK_H > self.height() - self.tag_bar.height():
+        if y + TASK_BLOCK_H > self.height() - self.tag_bar.height():
             return
         task.pos_x = x
         task.pos_y = y
@@ -2344,6 +2346,107 @@ class MainWindow(QMainWindow):
         )
         append_log("created", new, source="app", before_state=None)
         self._note_task_change(new, action="upsert")
+
+    def _find_task(self, task_id: str) -> Task | None:
+        pool = self.demo_tasks if self.demo_mode else self.store.tasks
+        for task in pool:
+            if task.id == task_id:
+                return task
+        return None
+
+    def on_task_role(self, task_id: str, role: str) -> None:
+        from .roles import coerce_role
+
+        task = self._find_task(task_id)
+        if task is None:
+            return
+        role = coerce_role(role)
+        if task.role == role:
+            return
+        if self.demo_mode:
+            task.role = role
+            self.reload_boards()
+            return
+        before = format_task_snapshot(task)
+        before_state = snapshot_dict(task)
+        task.role = role
+        append_log(
+            "changed",
+            task,
+            before=before,
+            detail="роль",
+            source="app",
+            before_state=before_state,
+        )
+        self.request_save()
+        self._last_paint_key = None
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def on_task_after_count(self, task_id: str, count: int) -> None:
+        from .task_graph import apply_follower_count
+
+        task = self._find_task(task_id)
+        if task is None:
+            return
+        tasks = self.demo_tasks if self.demo_mode else self.store.tasks
+        if self.demo_mode:
+            apply_follower_count(tasks, task, count)
+            self.reload_boards()
+            return
+        before = format_task_snapshot(task)
+        before_state = snapshot_dict(task)
+        created, removed, unlinked = apply_follower_count(tasks, task, count)
+        if (
+            not created
+            and not removed
+            and not unlinked
+            and snapshot_dict(task) == before_state
+        ):
+            return
+        batch = uuid.uuid4().hex if (created or removed or unlinked) else None
+        for child in created:
+            append_log(
+                "created",
+                child,
+                detail="узел графа",
+                source="app",
+                batch=batch,
+            )
+        for child, child_before in removed:
+            append_log(
+                "changed",
+                task_id=child.id,
+                before=format_task_snapshot(child),
+                after="(узел снят)",
+                detail="узел графа",
+                source="app",
+                before_state=child_before,
+                batch=batch,
+            )
+        for child, child_before in unlinked:
+            append_log(
+                "changed",
+                child,
+                before=format_task_snapshot(task_from_state(child_before)),
+                detail="узел графа",
+                source="app",
+                before_state=child_before,
+                batch=batch,
+            )
+        append_log(
+            "changed",
+            task,
+            before=before,
+            detail=f"после {task.after_count}",
+            source="app",
+            before_state=before_state,
+            batch=batch,
+        )
+        self.request_save()
+        self._last_paint_key = None
+        self.reload_boards()
+        self._sync_history_buttons()
 
     def on_task_clicked(self, task_id: str) -> None:
         if self.paint_mode:
