@@ -143,10 +143,14 @@ class TaskBlock(QWidget):
         add_btn.clicked.connect(lambda _checked=False, item=row: self._emit_add(item))
         del_btn.clicked.connect(lambda _checked=False, item=row: self._remove_row(item))
         edit.returnPressed.connect(lambda item=row: self._emit_add(item))
+        edit.show()
+        add_btn.show()
+        del_btn.show()
         self._rows.append(row)
         self._layout_chrome()
         edit.setFocus()
         self.raise_()
+        self.updateGeometry()
 
     def _remove_row(self, row: dict) -> None:
         if row not in self._rows:
