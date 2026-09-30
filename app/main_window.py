@@ -896,7 +896,10 @@ class BoardCanvas(QWidget):
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
-        block.after_count_changed.connect(self.main.on_task_after_count)
+        block.add_linked.connect(self.main.on_task_add_linked)
+        from .task_graph import linked_task_title
+
+        block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
         return block
 
     def _rebuild_annotations(self) -> None:
@@ -2383,62 +2386,36 @@ class MainWindow(QMainWindow):
         self.reload_boards()
         self._sync_history_buttons()
 
-    def on_task_after_count(self, task_id: str, count: int) -> None:
-        from .task_graph import apply_follower_count
+    def on_task_add_linked(self, task_id: str, title: str) -> None:
+        from .task_graph import add_linked_task
 
-        task = self._find_task(task_id)
-        if task is None:
+        parent = self._find_task(task_id)
+        name = (title or "").strip()
+        if parent is None or not name:
             return
         tasks = self.demo_tasks if self.demo_mode else self.store.tasks
         if self.demo_mode:
-            apply_follower_count(tasks, task, count)
+            add_linked_task(tasks, parent, name)
             self.reload_boards()
             return
-        before = format_task_snapshot(task)
-        before_state = snapshot_dict(task)
-        created, removed, unlinked = apply_follower_count(tasks, task, count)
-        if (
-            not created
-            and not removed
-            and not unlinked
-            and snapshot_dict(task) == before_state
-        ):
+        before = format_task_snapshot(parent)
+        before_state = snapshot_dict(parent)
+        child = add_linked_task(tasks, parent, name)
+        if child is None:
             return
-        batch = uuid.uuid4().hex if (created or removed or unlinked) else None
-        for child in created:
-            append_log(
-                "created",
-                child,
-                detail="узел графа",
-                source="app",
-                batch=batch,
-            )
-        for child, child_before in removed:
-            append_log(
-                "changed",
-                task_id=child.id,
-                before=format_task_snapshot(child),
-                after="(узел снят)",
-                detail="узел графа",
-                source="app",
-                before_state=child_before,
-                batch=batch,
-            )
-        for child, child_before in unlinked:
-            append_log(
-                "changed",
-                child,
-                before=format_task_snapshot(task_from_state(child_before)),
-                detail="узел графа",
-                source="app",
-                before_state=child_before,
-                batch=batch,
-            )
+        batch = uuid.uuid4().hex
+        append_log(
+            "created",
+            child,
+            detail="связанная задача",
+            source="app",
+            batch=batch,
+        )
         append_log(
             "changed",
-            task,
+            parent,
             before=before,
-            detail=f"после {task.after_count}",
+            detail="связанная задача",
             source="app",
             before_state=before_state,
             batch=batch,

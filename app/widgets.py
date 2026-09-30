@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -31,12 +30,10 @@ from .colors import border_color, font_color
 from .models import Task, parse_date
 from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
-from .task_graph import FOLLOWER_MAX
-
 TASK_W = 200
 TASK_H = 50
-# Нижняя полоса карточки: роль и число следующих узлов. Утренний разбор масштабирует TASK_H.
-TASK_BLOCK_H = TASK_H + 52
+# Нижняя полоса: роль, «+», поле связанной задачи. Утренний разбор масштабирует TASK_H.
+TASK_BLOCK_H = TASK_H + 76
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
 TAG_ICON = 32
@@ -51,7 +48,7 @@ class TaskBlock(QWidget):
     project_clicked = pyqtSignal(str)  # project name
     clicked = pyqtSignal(str)  # task_id
     role_changed = pyqtSignal(str, str)  # task_id, role
-    after_count_changed = pyqtSignal(str, int)  # task_id, сколько узлов после
+    add_linked = pyqtSignal(str, str)  # task_id, имя новой связанной задачи
 
     PROJECT_BAND = 16
 
@@ -63,6 +60,8 @@ class TaskBlock(QWidget):
         self.setAcceptDrops(True)
         self._drag_start: QPoint | None = None
         self._dragging = False
+        self._composer_open = False
+        self._linked_title = ""
         self._refresh_style()
         self._build_chrome()
         self._sync_chrome()
@@ -74,9 +73,8 @@ class TaskBlock(QWidget):
         self.update()
 
     def _build_chrome(self) -> None:
-        chrome_y = TASK_H + 2
         self._role = QComboBox(self)
-        self._role.setGeometry(4, chrome_y, TASK_W - 8, 22)
+        self._role.setGeometry(4, TASK_H + 2, TASK_W - 8, 22)
         self._role.setFont(QFont("Segoe UI", 8))
         self._role.setToolTip("Роль")
         self._role.addItem("роль", "")
@@ -85,18 +83,46 @@ class TaskBlock(QWidget):
         self._role.currentIndexChanged.connect(self._on_role)
         self._role.installEventFilter(self)
 
-        self._after_field = QLineEdit(self)
-        self._after_field.setGeometry(4, chrome_y + 24, TASK_W - 30, 22)
-        self._after_field.setFont(QFont("Segoe UI", 8))
-        self._after_field.setReadOnly(True)
-        self._after_field.setToolTip("Сколько карточек идёт сразу после этой")
-        self._after_field.installEventFilter(self)
+        self._plus_btn = QPushButton("+", self)
+        self._plus_btn.setFont(QFont("Segoe UI", 8))
+        self._plus_btn.setToolTip("Вписать имя связанной задачи")
+        self._plus_btn.clicked.connect(self._toggle_composer)
 
-        self._after_btn = QPushButton("▼", self)
-        self._after_btn.setGeometry(TASK_W - 24, chrome_y + 24, 20, 22)
-        self._after_btn.setFont(QFont("Segoe UI", 8))
-        self._after_btn.setToolTip("Число задач после этой")
-        self._after_btn.clicked.connect(self._open_after_menu)
+        self._name_edit = QLineEdit(self)
+        self._name_edit.setFont(QFont("Segoe UI", 8))
+        self._name_edit.setPlaceholderText("Имя задачи")
+        self._name_edit.returnPressed.connect(self._emit_add)
+
+        self._add_btn = QPushButton("Добавить", self)
+        self._add_btn.setFont(QFont("Segoe UI", 8))
+        self._add_btn.setToolTip("Создать связанную задачу")
+        self._add_btn.clicked.connect(self._emit_add)
+
+        self._linked = QLineEdit(self)
+        self._linked.setFont(QFont("Segoe UI", 8))
+        self._linked.setReadOnly(True)
+        self._linked.setPlaceholderText("Связанная задача")
+        self._linked.setToolTip("Связанная задача")
+        self._layout_chrome()
+
+    def _layout_chrome(self) -> None:
+        y = TASK_H + 2
+        self._role.setGeometry(4, y, TASK_W - 8, 22)
+        y += 24
+        self._plus_btn.setGeometry(4, y, 22, 22)
+        y += 24
+        if self._composer_open:
+            self._name_edit.setGeometry(4, y, TASK_W - 80, 22)
+            self._add_btn.setGeometry(TASK_W - 74, y, 70, 22)
+            self._name_edit.show()
+            self._add_btn.show()
+            y += 24
+        else:
+            self._name_edit.hide()
+            self._add_btn.hide()
+        self._linked.setGeometry(4, y, TASK_W - 8, 22)
+        y += 26
+        self.setFixedSize(TASK_W, y)
 
     def _sync_chrome(self) -> None:
         role = coerce_role(self.task.role)
@@ -104,7 +130,12 @@ class TaskBlock(QWidget):
         index = self._role.findData(role)
         self._role.setCurrentIndex(index if index >= 0 else 0)
         self._role.blockSignals(False)
-        self._after_field.setText(f"после {self.task.after_count}")
+        self._linked.setText(self._linked_title)
+
+    def set_linked_title(self, title: str) -> None:
+        self._linked_title = (title or "").strip()
+        if hasattr(self, "_linked"):
+            self._linked.setText(self._linked_title)
 
     def _on_role(self, _index: int) -> None:
         role = coerce_role(self._role.currentData())
@@ -112,25 +143,22 @@ class TaskBlock(QWidget):
             return
         self.role_changed.emit(self.task.id, role)
 
-    def _open_after_menu(self) -> None:
-        menu = QMenu(self)
-        for count in range(FOLLOWER_MAX + 1):
-            action = menu.addAction(str(count))
-            action.setData(count)
-        chosen = menu.exec(self._after_btn.mapToGlobal(QPoint(0, self._after_btn.height())))
-        if chosen is None:
+    def _toggle_composer(self) -> None:
+        self._composer_open = not self._composer_open
+        self._layout_chrome()
+        if self._composer_open:
+            self._name_edit.setFocus()
+            self.raise_()
+
+    def _emit_add(self) -> None:
+        title = self._name_edit.text().strip()
+        if not title:
             return
-        count = int(chosen.data())
-        if count == len(self.task.after_ids):
-            return
-        self.after_count_changed.emit(self.task.id, count)
+        self.add_linked.emit(self.task.id, title)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if watched is self._role and event.type() == QEvent.Type.Wheel:
             event.ignore()
-            return True
-        if watched is self._after_field and event.type() == QEvent.Type.MouseButtonPress:
-            self._open_after_menu()
             return True
         return super().eventFilter(watched, event)
 

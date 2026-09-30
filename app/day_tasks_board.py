@@ -383,7 +383,10 @@ class DayTasksCanvas(QWidget):
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
-        block.after_count_changed.connect(self.main.on_task_after_count)
+        block.add_linked.connect(self.main.on_task_add_linked)
+        from .task_graph import linked_task_title
+
+        block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
         self._blocks.append(block)
         return block
 
