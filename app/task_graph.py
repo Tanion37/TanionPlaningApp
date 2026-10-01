@@ -66,6 +66,54 @@ def reconcile_links(tasks: list[Task]) -> bool:
     return changed
 
 
+def linked_task_title(tasks: list[Task], task: Task) -> str:
+    """Имена задач, связанных с этой. У корня — имена следующих узлов."""
+    by_id = {item.id: item for item in tasks}
+    names: list[str] = []
+    for tid in task.after_ids:
+        child = by_id.get(tid)
+        if child is None:
+            continue
+        name = (child.title or "").strip()
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return ", ".join(names)
+    parent = by_id.get((task.prev_id or "").strip())
+    if parent is None:
+        return ""
+    return (parent.title or "").strip()
+
+
+def add_linked_task(tasks: list[Task], parent: Task, title: str) -> Task | None:
+    """Новый узел сразу после parent. Имя пустое — ничего не создавать."""
+    from .widgets import TASK_BLOCK_H, TASK_W
+    from .xlsx_store import _next_id
+
+    name = (title or "").strip()
+    if parent is None or not name:
+        return None
+    child = Task(
+        id=_next_id(tasks),
+        title=name,
+        created_at=date.today(),
+        start_at=parent.start_at,
+        due_at=parent.due_at,
+        project=parent.project,
+        author=parent.author,
+        prev_id=parent.id,
+        source="chain",
+    )
+    slot = len(parent.after_ids)
+    if parent.pos_x is not None and parent.pos_y is not None:
+        child.pos_x = float(parent.pos_x) + TASK_W + 28
+        child.pos_y = float(parent.pos_y) + slot * (TASK_BLOCK_H + 8)
+    tasks.append(child)
+    parent.after_ids.append(child.id)
+    parent.after_count = len(parent.after_ids)
+    return child
+
+
 def apply_follower_count(
     tasks: list[Task], parent: Task, count: int
 ) -> tuple[list[Task], list[tuple[Task, dict]], list[tuple[Task, dict]]]:
