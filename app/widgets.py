@@ -27,12 +27,13 @@ from PyQt6.QtWidgets import (
 )
 
 from .colors import border_color, font_color
+from .theme import SELECT, card_bg, is_dark, readable
 from .models import Task, parse_date
 from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
 TASK_W = 200
 TASK_H = 50
-# Нижняя полоса: роль, «+», поле связанной задачи. Утренний разбор масштабирует TASK_H.
+# Нижняя полоса: роль, «+», связанная задача.
 TASK_BLOCK_H = TASK_H + 76
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
@@ -52,9 +53,14 @@ class TaskBlock(QWidget):
 
     PROJECT_BAND = 16
 
-    def __init__(self, task: Task, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        task: Task,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.task = task
+        self._marked = False
         self.setFixedSize(TASK_W, TASK_BLOCK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setAcceptDrops(True)
@@ -118,6 +124,10 @@ class TaskBlock(QWidget):
         self._role.setCurrentIndex(index if index >= 0 else 0)
         self._role.blockSignals(False)
         self._linked.setText(self._linked_title)
+
+    def set_marked(self, on: bool) -> None:
+        self._marked = bool(on)
+        self.update()
 
     def set_linked_title(self, title: str) -> None:
         self._linked_title = (title or "").strip()
@@ -210,15 +220,16 @@ class TaskBlock(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self._bd, 2))
-        painter.setBrush(QColor("#FFFFFF"))
+        border = QColor(SELECT) if self._marked else self._bd
+        painter.setPen(QPen(border, 3 if self._marked else 2))
+        painter.setBrush(QColor(card_bg()))
         painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
 
         project = self._project_name()
         top = 4
         if project:
             painter.setPen(
-                QColor("#555555")
+                QColor(readable("#555555"))
                 if not self.task.is_hidden_from_boards()
                 else self._fg
             )
@@ -236,7 +247,7 @@ class TaskBlock(QWidget):
 
         tags_text = tags_to_cell(self.task.tags)
         label = f"{tags_text} {self.task.title}".strip()
-        painter.setPen(self._fg)
+        painter.setPen(QColor(readable(self._fg.name())))
         font = QFont("Segoe UI Emoji", 9)
         if not font.exactMatch():
             font = QFont("Segoe UI", 9)
@@ -465,18 +476,24 @@ class TagCircle(QWidget):
         s = self._size
         if self.highlighted or self.selected:
             color = QColor("#FFD700")
+            border = QColor("#333333")
+            text = QColor("#1565C0" if self.tag_key == "ПРОГД" else "#000000")
+        elif is_dark():
+            color = QColor(card_bg())
+            border = QColor(readable("#333333"))
+            text = QColor(readable("#1565C0" if self.tag_key == "ПРОГД" else "#000000"))
         else:
             color = QColor("#F0F0F0")
-        pen = QPen(QColor("#333333"), 2 if s >= 40 else 1)
-        painter.setPen(pen)
+            border = QColor("#333333")
+            text = QColor("#1565C0" if self.tag_key == "ПРОГД" else "#000000")
+        painter.setPen(QPen(border, 2 if s >= 40 else 1))
         painter.setBrush(color)
         painter.drawEllipse(1, 1, s - 2, s - 2)
+        painter.setPen(text)
         if self.tag_key == "ПРОГД":
-            painter.setPen(QColor("#1565C0"))
             font = QFont("Segoe UI", 11 if s >= 40 else 8)
             font.setBold(True)
         else:
-            painter.setPen(QColor("#000000"))
             font = QFont("Segoe UI Emoji", 14 if s >= 40 else 11)
         painter.setFont(font)
         painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self.symbol)
@@ -630,17 +647,26 @@ class CircleButton(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         enabled = self.isEnabled()
-        pen = QColor("#333333") if enabled else QColor("#AAAAAA")
         if not enabled:
-            brush = QColor("#F0F0F0")
+            brush = QColor(card_bg() if is_dark() else "#F0F0F0")
+            pen = QColor(readable("#AAAAAA"))
+            text = QColor(readable("#999999"))
         elif self._active:
             brush = QColor("#BBDEFB")
+            pen = QColor("#333333")
+            text = QColor("#000000")
+        elif is_dark():
+            brush = QColor(card_bg())
+            pen = QColor(readable("#333333"))
+            text = QColor(readable("#000000"))
         else:
             brush = QColor("#FFFFFF")
+            pen = QColor("#333333")
+            text = QColor("#000000")
         painter.setPen(QPen(pen, 2))
         painter.setBrush(brush)
         painter.drawEllipse(1, 1, CIRCLE - 2, CIRCLE - 2)
-        painter.setPen(QColor("#000000") if enabled else QColor("#999999"))
+        painter.setPen(text)
         font = QFont("Segoe UI", 16)
         painter.setFont(font)
         painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self.label)
@@ -1165,6 +1191,29 @@ class NewTaskDialog(_EnterAcceptDialog):
         preset_row.addStretch(1)
         root.addLayout(preset_row)
 
+        from .preset_store import list_preset_names
+
+        self._chain_preset = ""
+        self._chain_step = -1
+        self._chain_role = ""
+        catalog = QHBoxLayout()
+        catalog.setSpacing(6)
+        catalog.addWidget(QLabel("Проект"))
+        self.project_combo = QComboBox()
+        self.project_combo.addItem("", "")
+        for name in project_names or []:
+            self.project_combo.addItem(name, name)
+        self.project_combo.currentIndexChanged.connect(self._on_project_combo)
+        catalog.addWidget(self.project_combo, 1)
+        catalog.addWidget(QLabel("Preset"))
+        self.file_preset = QComboBox()
+        self.file_preset.addItem("", "")
+        for name in list_preset_names():
+            self.file_preset.addItem(name, name)
+        self.file_preset.currentIndexChanged.connect(self._on_file_preset)
+        catalog.addWidget(self.file_preset, 1)
+        root.addLayout(catalog)
+
         form = QFormLayout()
 
         self.title_edit = QLineEdit()
@@ -1249,6 +1298,44 @@ class NewTaskDialog(_EnterAcceptDialog):
         root.addWidget(_ok_left_button_box(self._try_accept, self.reject))
         self._install_enter_accept()
 
+    def _on_project_combo(self, _index: int) -> None:
+        name = str(self.project_combo.currentData() or "")
+        if name:
+            self.project_edit.setText(name)
+
+    def _sync_project_combo(self, name: str) -> None:
+        self.project_combo.blockSignals(True)
+        if name and self.project_combo.findData(name) < 0:
+            self.project_combo.addItem(name, name)
+        index = self.project_combo.findData(name) if name else 0
+        self.project_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.project_combo.blockSignals(False)
+
+    def _on_file_preset(self, _index: int) -> None:
+        from .preset_store import load_steps, root_indexes
+
+        name = str(self.file_preset.currentData() or "")
+        if not name:
+            self._chain_preset = ""
+            self._chain_step = -1
+            self._chain_role = ""
+            return
+        steps = load_steps(name)
+        roots = root_indexes(steps)
+        if not steps or not roots:
+            return
+        index = roots[0]
+        step = steps[index]
+        self.title_edit.setText(step.get("title") or "")
+        project = str(step.get("project") or "")
+        self.project_edit.setText(project)
+        self._sync_project_combo(project)
+        self.description_edit.setPlainText(step.get("description") or "")
+        self.tag_picker.set_keys(list(step.get("tags") or []))
+        self._chain_preset = name
+        self._chain_step = index
+        self._chain_role = str(step.get("role") or "")
+
     def _on_preset(self, name: str) -> None:
         from .create_presets import tags_for_preset
 
@@ -1291,6 +1378,9 @@ class NewTaskDialog(_EnterAcceptDialog):
             "executor": self.executor.text().strip() or DEFAULT_EXECUTOR,
             "tags": self.tag_picker.selected_keys(),
             "create_preset": self._create_preset,
+            "chain_preset": self._chain_preset,
+            "chain_step": self._chain_step,
+            "chain_role": self._chain_role,
         }
 
 
