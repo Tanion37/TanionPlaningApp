@@ -27,13 +27,14 @@ from PyQt6.QtWidgets import (
 )
 
 from .colors import border_color, font_color
+from .theme import SELECT, card_bg, readable
 from .models import Task, parse_date
 from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
 TASK_W = 200
 TASK_H = 50
-# Нижняя полоса: роль, «+», поле связанной задачи. Утренний разбор масштабирует TASK_H.
-TASK_BLOCK_H = TASK_H + 76
+# Нижняя полоса: роль, Preset, проект, «+», связанная задача.
+TASK_BLOCK_H = TASK_H + 124
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
 TAG_ICON = 32
@@ -49,12 +50,22 @@ class TaskBlock(QWidget):
     clicked = pyqtSignal(str)  # task_id
     role_changed = pyqtSignal(str, str)  # task_id, role
     add_linked = pyqtSignal(str, str, object)  # task_id, имя, тексты остальных полей
+    preset_picked = pyqtSignal(str, str)  # task_id, имя файла Preset
+    project_picked = pyqtSignal(str, str)  # task_id, проект
 
     PROJECT_BAND = 16
 
-    def __init__(self, task: Task, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        task: Task,
+        parent: QWidget | None = None,
+        *,
+        show_catalogs: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.task = task
+        self.show_catalogs = show_catalogs
+        self._marked = False
         self.setFixedSize(TASK_W, TASK_BLOCK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setAcceptDrops(True)
@@ -88,6 +99,22 @@ class TaskBlock(QWidget):
         self._plus_btn.setToolTip("Добавить поле имени")
         self._plus_btn.clicked.connect(self._add_row)
 
+        self._preset_label = QLabel("Preset", self)
+        self._preset_label.setFont(QFont("Segoe UI", 8))
+        self._preset = QComboBox(self)
+        self._preset.setFont(QFont("Segoe UI", 8))
+        self._preset.currentIndexChanged.connect(self._on_preset)
+        self._project_label = QLabel("Проект", self)
+        self._project_label.setFont(QFont("Segoe UI", 8))
+        self._project = QComboBox(self)
+        self._project.setFont(QFont("Segoe UI", 8))
+        self._project.currentIndexChanged.connect(self._on_project)
+        if not self.show_catalogs:
+            self._preset_label.hide()
+            self._preset.hide()
+            self._project_label.hide()
+            self._project.hide()
+
         self._linked = QLineEdit(self)
         self._linked.setFont(QFont("Segoe UI", 8))
         self._linked.setReadOnly(True)
@@ -99,6 +126,13 @@ class TaskBlock(QWidget):
         y = TASK_H + 2
         self._role.setGeometry(4, y, TASK_W - 8, 22)
         y += 24
+        if self.show_catalogs:
+            self._preset_label.setGeometry(4, y, 52, 22)
+            self._preset.setGeometry(58, y, TASK_W - 62, 22)
+            y += 24
+            self._project_label.setGeometry(4, y, 52, 22)
+            self._project.setGeometry(58, y, TASK_W - 62, 22)
+            y += 24
         self._plus_btn.setGeometry(4, y, 22, 22)
         y += 24
         for row in self._rows:
@@ -118,6 +152,50 @@ class TaskBlock(QWidget):
         self._role.setCurrentIndex(index if index >= 0 else 0)
         self._role.blockSignals(False)
         self._linked.setText(self._linked_title)
+
+    def set_marked(self, on: bool) -> None:
+        self._marked = bool(on)
+        self.update()
+
+    def set_preset_names(self, names: list[str]) -> None:
+        if not self.show_catalogs:
+            return
+        current = self.task.preset_name or ""
+        self._preset.blockSignals(True)
+        self._preset.clear()
+        self._preset.addItem("", "")
+        for name in names:
+            self._preset.addItem(name, name)
+        index = self._preset.findData(current)
+        self._preset.setCurrentIndex(index if index >= 0 else 0)
+        self._preset.blockSignals(False)
+
+    def set_project_names(self, names: list[str]) -> None:
+        if not self.show_catalogs:
+            return
+        current = (self.task.project or "").strip()
+        self._project.blockSignals(True)
+        self._project.clear()
+        self._project.addItem("", "")
+        for name in names:
+            self._project.addItem(name, name)
+        if current and self._project.findData(current) < 0:
+            self._project.addItem(current, current)
+        index = self._project.findData(current)
+        self._project.setCurrentIndex(index if index >= 0 else 0)
+        self._project.blockSignals(False)
+
+    def _on_preset(self, _index: int) -> None:
+        name = str(self._preset.currentData() or "")
+        if name == (self.task.preset_name or ""):
+            return
+        self.preset_picked.emit(self.task.id, name)
+
+    def _on_project(self, _index: int) -> None:
+        name = str(self._project.currentData() or "")
+        if name == (self.task.project or "").strip():
+            return
+        self.project_picked.emit(self.task.id, name)
 
     def set_linked_title(self, title: str) -> None:
         self._linked_title = (title or "").strip()
@@ -210,15 +288,16 @@ class TaskBlock(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self._bd, 2))
-        painter.setBrush(QColor("#FFFFFF"))
+        border = QColor(SELECT) if self._marked else self._bd
+        painter.setPen(QPen(border, 3 if self._marked else 2))
+        painter.setBrush(QColor(card_bg()))
         painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
 
         project = self._project_name()
         top = 4
         if project:
             painter.setPen(
-                QColor("#555555")
+                QColor(readable("#555555"))
                 if not self.task.is_hidden_from_boards()
                 else self._fg
             )
@@ -236,7 +315,7 @@ class TaskBlock(QWidget):
 
         tags_text = tags_to_cell(self.task.tags)
         label = f"{tags_text} {self.task.title}".strip()
-        painter.setPen(self._fg)
+        painter.setPen(QColor(readable(self._fg.name())))
         font = QFont("Segoe UI Emoji", 9)
         if not font.exactMatch():
             font = QFont("Segoe UI", 9)

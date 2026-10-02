@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .annotations import AnnotationStore, LabelAnn, RectAnn
+from .catalog_board import CatalogCanvas
 from .activity_log import (
     append_log,
     apply_state_to_task,
@@ -897,9 +899,15 @@ class BoardCanvas(QWidget):
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
         block.add_linked.connect(self.main.on_task_add_linked)
+        block.preset_picked.connect(self.main.on_task_preset)
+        block.project_picked.connect(self.main.on_task_project)
+        from .preset_store import list_preset_names
         from .task_graph import linked_task_title
 
         block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
+        block.set_preset_names(list_preset_names())
+        block.set_project_names(self.main._project_names())
+        block.set_marked(task.id == self.main.selected_task_id)
         return block
 
     def _rebuild_annotations(self) -> None:
@@ -921,7 +929,9 @@ class BoardCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#FAFAF7"))
+        from .theme import board_bg
+
+        painter.fillRect(self.rect(), QColor(board_bg()))
         painter.setPen(QColor("#666666"))
         font = QFont("Segoe UI", 10)
         font.setBold(True)
@@ -1079,6 +1089,9 @@ def _restart_supervised_bots() -> None:
 
 class MainWindow(QMainWindow):
     def __init__(self, store: TaskStore, annotations: AnnotationStore | None = None) -> None:
+        from .theme import load as load_theme
+
+        load_theme()
         super().__init__()
         self.store = store
         self.lists_store = ListsStore(store.path)
@@ -1166,6 +1179,10 @@ class MainWindow(QMainWindow):
             self.boards.append(board)
             self.stack.addWidget(board)
             self.screen_titles.append((screen_id, title))
+        self.catalog_board = CatalogCanvas(self)
+        self.catalog_board.swipe_callback = self._on_swipe
+        self.stack.addWidget(self.catalog_board)
+        self.screen_titles.append(("catalog", "Проекты и Preset"))
         layout.addWidget(self.stack, 1)
 
         self.controls = QWidget(self)
@@ -1174,8 +1191,12 @@ class MainWindow(QMainWindow):
         controls_layout.setSpacing(8)
         self.btn_new_global = CircleButton("+")
         self.btn_new_global.setToolTip("Новая задача")
-        self.btn_new_global.clicked.connect(self.new_task)
+        self.btn_new_global.clicked.connect(self._on_new_global_clicked)
         controls_layout.addWidget(self.btn_new_global)
+        self.btn_theme = CircleButton("◐")
+        self.btn_theme.setToolTip("Тема: светлая или тёмная")
+        self.btn_theme.clicked.connect(self.toggle_theme)
+        controls_layout.addWidget(self.btn_theme)
         self.btn_fullscreen = CircleButton("⛶")
         self.btn_fullscreen.setToolTip("Полный экран")
         self.btn_fullscreen.clicked.connect(self.toggle_fullscreen)
@@ -1522,6 +1543,8 @@ class MainWindow(QMainWindow):
             return self.day_board
         if screen_id == "morning_review":
             return self.morning_board
+        if screen_id == "catalog":
+            return self.catalog_board
         for board in self.boards:
             if board.screen_id == screen_id:
                 return board
@@ -2301,7 +2324,22 @@ class MainWindow(QMainWindow):
                 **kwargs,
             )
 
+    def _mark_selected_blocks(self) -> None:
+        selected = self.selected_task_id
+        board = self._board_for_screen(self._current_screen_id())
+        blocks = []
+        if board is not None:
+            mapped = getattr(board, "blocks", None)
+            if isinstance(mapped, dict):
+                blocks = list(mapped.values())
+            else:
+                blocks = list(getattr(board, "_blocks", []))
+        for block in blocks:
+            if hasattr(block, "set_marked"):
+                block.set_marked(getattr(block, "task", None) is not None and block.task.id == selected)
+
     def _apply_action(self, task: Task, action_key: str) -> None:
+        was_done = task.is_done()
         key = action_key
         if key == TODAY_ACTION:
             if not self.demo_mode:
@@ -2325,6 +2363,8 @@ class MainWindow(QMainWindow):
             apply_answers_tag(task)
         else:
             apply_status_tag(task, key)
+        if not was_done and task.is_done():
+            self._advance_preset_chain(task)
 
     def _spawn_verify_task(self, source: Task) -> None:
         tags = [
@@ -2453,6 +2493,7 @@ class MainWindow(QMainWindow):
             return
         self.selected_task_id = task_id
         self.selected_ann_id = None
+        self._mark_selected_blocks()
 
     def on_annotation_selected(self, ann_id: str) -> None:
         self.selected_ann_id = ann_id or None
@@ -2701,6 +2742,131 @@ class MainWindow(QMainWindow):
         self._place_floating_controls()
         self._raise_floating()
 
+    def _on_new_global_clicked(self) -> None:
+        if self._is_lists_screen():
+            self.new_task()
+            return
+        menu = QMenu(self)
+        action_task = menu.addAction("Новая задача")
+        action_preset = menu.addAction("Новый Preset")
+        chosen = menu.exec(
+            self.btn_new_global.mapToGlobal(QPoint(0, self.btn_new_global.height()))
+        )
+        if chosen == action_task:
+            self.new_task()
+        elif chosen == action_preset:
+            self.open_preset_window()
+
+    def toggle_theme(self) -> None:
+        from .theme import board_style, toggle
+
+        toggle()
+        style = board_style()
+        self.setStyleSheet(style)
+        for index in range(self.stack.count()):
+            widget = self.stack.widget(index)
+            if hasattr(widget, "apply_theme"):
+                widget.apply_theme()
+            else:
+                widget.setStyleSheet(style)
+        self.reload_boards()
+
+    def open_preset_window(self, preset_name: str | None = None) -> None:
+        from .preset_store import load_steps
+        from .preset_window import PresetWindow
+        from .tags import INBOX_TAG
+
+        if self.demo_mode:
+            QMessageBox.information(self, "ДЕМО", "В демо-режиме Preset отключён.")
+            return
+        dialog = PresetWindow(self, preset_name)
+        if dialog.exec() != dialog.DialogCode.Accepted or not dialog.saved_name:
+            return
+        steps = load_steps(dialog.saved_name)
+        if not steps:
+            return
+        already = any(
+            (task.preset_name or "") == dialog.saved_name and int(task.preset_step or -1) == 0
+            for task in self.store.tasks
+        )
+        if already:
+            self.reload_boards()
+            return
+        first = steps[0]
+        tags = [tag for tag in first.get("tags") or [] if tag != INBOX_TAG]
+        tags.insert(0, INBOX_TAG)
+        self.store.add_task(
+            first["title"],
+            role=first.get("role") or "",
+            project=first.get("project") or "",
+            description=first.get("description") or "",
+            tags=tags,
+            preset_name=dialog.saved_name,
+            preset_step=0,
+            source="preset",
+        )
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def on_task_preset(self, task_id: str, name: str) -> None:
+        from .preset_store import apply_step, load_steps
+
+        task = self._find_task(task_id)
+        if task is None or self.demo_mode:
+            return
+        if not name:
+            task.preset_name = ""
+            task.preset_step = -1
+            self.request_save()
+            self.reload_boards()
+            return
+        steps = load_steps(name)
+        if not steps:
+            return
+        before_state = snapshot_dict(task)
+        apply_step(task, steps[0], preset_name=name, step_index=0)
+        append_log(
+            "changed",
+            task,
+            detail=f"preset {name}",
+            source="app",
+            before_state=before_state,
+        )
+        self.request_save()
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def on_task_project(self, task_id: str, name: str) -> None:
+        from .projects import resolve_project_name
+
+        task = self._find_task(task_id)
+        if task is None:
+            return
+        project = resolve_project_name(name, self.visible_tasks()) if name else ""
+        if (task.project or "") == project:
+            return
+        if self.demo_mode:
+            task.project = project
+            self.reload_boards()
+            return
+        before_state = snapshot_dict(task)
+        task.project = project
+        append_log("changed", task, detail="проект", source="app", before_state=before_state)
+        self.request_save()
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def _advance_preset_chain(self, task: Task) -> None:
+        from .preset_store import spawn_next_inbox
+
+        if self.demo_mode:
+            return
+        created = spawn_next_inbox(self.store, task)
+        if created is None:
+            return
+        append_log("created", created, detail="следующий шаг Preset", source="app")
+        self.request_save()
+
     def new_task(self) -> None:
         if self._is_lists_screen():
             self.lists_board.add_new_list()
@@ -2843,6 +3009,7 @@ class MainWindow(QMainWindow):
                 task.tags.append(CANCEL_TAG)
         self.request_save()
         if task.is_done() and not was_done:
+            self._advance_preset_chain(task)
             append_log(
                 "completed",
                 task,

@@ -67,6 +67,8 @@ COLUMNS: tuple[str, ...] = (
     "после",
     "после_id",
     "пред_id",
+    "preset",
+    "preset_шаг",
 )
 
 HEADER_ALIASES: dict[str, str] = {
@@ -115,6 +117,10 @@ HEADER_ALIASES: dict[str, str] = {
     "after_ids": "после_id",
     "пред_id": "пред_id",
     "prev_id": "пред_id",
+    "preset": "preset",
+    "preset_name": "preset",
+    "preset_шаг": "preset_шаг",
+    "preset_step": "preset_шаг",
 }
 
 
@@ -162,6 +168,15 @@ def _next_id(tasks: list[Task]) -> str:
         if match:
             max_num = max(max_num, int(match.group(1)))
     return f"{max_num + 1:03d}"
+
+
+def _parse_preset_step(value) -> int:
+    if value is None or value == "":
+        return -1
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return -1
 
 
 def _parse_after_count(value) -> int:
@@ -304,6 +319,8 @@ class TaskStore:
                     after_ids=_parse_after_ids(_cell(row, mapping, "после_id")),
                     after_count=_parse_after_count(_cell(row, mapping, "после")),
                     prev_id=str(_cell(row, mapping, "пред_id") or "").strip(),
+                    preset_name=str(_cell(row, mapping, "preset") or "").strip(),
+                    preset_step=_parse_preset_step(_cell(row, mapping, "preset_шаг")),
                 )
             )
         usage = collect_tag_usage(t.tags for t in tasks)
@@ -387,6 +404,8 @@ class TaskStore:
                         int(getattr(task, "after_count", 0) or 0),
                         _dump_after_ids(getattr(task, "after_ids", None) or []),
                         getattr(task, "prev_id", "") or "",
+                        getattr(task, "preset_name", "") or "",
+                        int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1),
                     ]
                 )
             write_tags_sheet(wb)
@@ -418,6 +437,8 @@ class TaskStore:
             after_count=int(kwargs.get("after_count") or 0),
             after_ids=list(kwargs.get("after_ids") or []),
             prev_id=str(kwargs.get("prev_id") or "").strip(),
+            preset_name=str(kwargs.get("preset_name") or "").strip(),
+            preset_step=int(kwargs.get("preset_step") if kwargs.get("preset_step") is not None else -1),
         )
         from .period_roll import ensure_task_series
 

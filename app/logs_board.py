@@ -164,7 +164,9 @@ class LogsCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#FAFAF7"))
+        from .theme import board_bg
+
+        painter.fillRect(self.rect(), QColor(board_bg()))
         painter.setPen(QColor("#666666"))
         font = QFont("Segoe UI", 10)
         font.setBold(True)

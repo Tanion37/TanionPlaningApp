@@ -548,4 +548,6 @@ class MorningReviewCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#FAFAF7"))
+        from .theme import board_bg
+
+        painter.fillRect(self.rect(), QColor(board_bg()))

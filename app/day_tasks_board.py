@@ -384,9 +384,15 @@ class DayTasksCanvas(QWidget):
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
         block.add_linked.connect(self.main.on_task_add_linked)
+        block.preset_picked.connect(self.main.on_task_preset)
+        block.project_picked.connect(self.main.on_task_project)
+        from .preset_store import list_preset_names
         from .task_graph import linked_task_title
 
         block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
+        block.set_preset_names(list_preset_names())
+        block.set_project_names(self.main._project_names())
+        block.set_marked(task.id == self.main.selected_task_id)
         self._blocks.append(block)
         return block
 
@@ -661,7 +667,9 @@ class DayTasksCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#FAFAF7"))
+        from .theme import board_bg
+
+        painter.fillRect(self.rect(), QColor(board_bg()))
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
