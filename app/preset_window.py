@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -49,23 +50,29 @@ class PresetWindow(QDialog):
         buttons = QHBoxLayout()
         create_btn = QPushButton("Создать задачу")
         delete_btn = QPushButton("Удалить задачу")
-        close_btn = QPushButton("Закрыть окно")
         save_btn = QPushButton("Сохранить")
         create_btn.clicked.connect(self._create_task)
         delete_btn.clicked.connect(self._delete_selected)
-        close_btn.clicked.connect(self.reject)
         save_btn.clicked.connect(self._save)
         buttons.addWidget(create_btn)
         buttons.addWidget(delete_btn)
         buttons.addStretch(1)
-        buttons.addWidget(close_btn)
         buttons.addWidget(save_btn)
         root.addLayout(buttons)
         self._rebuild()
 
     def _create_task(self) -> None:
-        number = len(self.tasks) + 1
-        self.tasks.append(Task(id=f"{number:03d}", title="Новая задача"))
+        title, ok = QInputDialog.getText(self, "Новая задача", "Название задачи")
+        if not ok:
+            return
+        title = title.strip()
+        if not title:
+            return
+        used = {task.id for task in self.tasks}
+        number = 1
+        while f"{number:03d}" in used:
+            number += 1
+        self.tasks.append(Task(id=f"{number:03d}", title=title))
         self.selected_id = self.tasks[-1].id
         self._rebuild()
 

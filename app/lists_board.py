@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 
 from .executors_store import DEMO_EXECUTORS, ExecutorsStore
 from .layout_metrics import content_side_margins
+from .theme import readable
 from .lists_store import ListColumn, ListItem, ListsStore
 
 COL_W = 180
@@ -61,7 +62,9 @@ class ListItemRow(QWidget):
         font = QFont("Segoe UI", 10)
         font.setStrikeOut(item.done)
         lab.setFont(font)
-        lab.setStyleSheet("color:#888888;" if item.done else "color:#222222;")
+        lab.setStyleSheet(
+            f"color:{readable('#888888')};" if item.done else f"color:{readable('#222222')};"
+        )
         lab.setToolTip("Изменить пункт")
         layout.addWidget(self._btn, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(lab, 1)
@@ -112,7 +115,7 @@ class ListColumnBody(QWidget):
             text = entry if isinstance(entry, str) else entry[1].text
             lab = QLabel(f"• {text}")
             lab.setWordWrap(True)
-            lab.setStyleSheet("color:#222222; font-size:12px;")
+            lab.setStyleSheet(f"color:{readable('#222222')}; font-size:12px;")
             if item_removable:
                 lab.setCursor(Qt.CursorShape.PointingHandCursor)
                 lab.mouseReleaseEvent = (  # type: ignore[method-assign]
@@ -187,14 +190,16 @@ class ListColumnWidget(QWidget):
         font = QFont("Segoe UI", 11)
         font.setBold(True)
         title.setFont(font)
-        title.setStyleSheet("color:#1565C0;" if accent else "color:#333333;")
+        title.setStyleSheet(
+            f"color:{readable('#1565C0')};" if accent else f"color:{readable('#333333')};"
+        )
         head.addWidget(title, 1)
         layout.addLayout(head)
 
         if column.aliases:
             aliases = QLabel(", ".join(column.aliases))
             aliases.setWordWrap(True)
-            aliases.setStyleSheet("color:#888888; font-size:10px;")
+            aliases.setStyleSheet(f"color:{readable('#888888')}; font-size:10px;")
             layout.addWidget(aliases)
 
         visible: list[tuple[int, ListItem]] | list[str]
@@ -460,10 +465,10 @@ class ListsCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from .theme import board_bg
+        from .theme import board_bg, readable
 
         painter.fillRect(self.rect(), QColor(board_bg()))
-        painter.setPen(QColor("#666666"))
+        painter.setPen(QColor(readable("#666666")))
         font = QFont("Segoe UI", 10)
         font.setBold(True)
         painter.setFont(font)

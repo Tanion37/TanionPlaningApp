@@ -182,10 +182,20 @@ def remove_with_outgoing(tasks: list[Task], task_id: str) -> None:
     tasks[:] = kept
 
 
+def step_index(value) -> int:
+    """0 — первый шаг. Пустое значение — шага нет."""
+    if value is None or value == "":
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
 def spawn_next_inbox(store, task: Task):
     """После выполнения шага создать следующий из Preset во входящих."""
     name = (getattr(task, "preset_name", "") or "").strip()
-    step = int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1)
+    step = step_index(getattr(task, "preset_step", -1))
     if not name or step < 0:
         return None
     steps = load_steps(name)
@@ -193,7 +203,7 @@ def spawn_next_inbox(store, task: Task):
     if nxt >= len(steps):
         return None
     for other in store.tasks:
-        if (other.preset_name or "") == name and int(other.preset_step or -1) == nxt:
+        if (other.preset_name or "") == name and step_index(other.preset_step) == nxt:
             return None
     data = steps[nxt]
     tags = [tag for tag in data.get("tags") or [] if tag != INBOX_TAG]

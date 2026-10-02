@@ -929,10 +929,10 @@ class BoardCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from .theme import board_bg
+        from .theme import board_bg, readable
 
         painter.fillRect(self.rect(), QColor(board_bg()))
-        painter.setPen(QColor("#666666"))
+        painter.setPen(QColor(readable("#666666")))
         font = QFont("Segoe UI", 10)
         font.setBold(True)
         painter.setFont(font)
@@ -1364,6 +1364,7 @@ class MainWindow(QMainWindow):
         self._periodic_timer.timeout.connect(self._on_periodic_timer)
         self._periodic_timer.start()
         self._install_xlsx_live_reload()
+        self._apply_theme_chrome()
 
     def _executor_names(self) -> list[str]:
         if self.demo_mode:
@@ -2051,13 +2052,16 @@ class MainWindow(QMainWindow):
                 else:
                     apply_control_tag(task)
             elif key == DONE_TAG:
-                if task.is_done():
+                was_done = task.is_done()
+                if was_done:
                     task.remove_tag(DONE_TAG)
                     task.completed_at = None
                 else:
                     apply_status_tag(task, DONE_TAG)
                     log_action = "completed"
                     log_detail = ""
+                if not was_done and task.is_done():
+                    self._advance_preset_chain(task)
             elif key == CANCEL_TAG:
                 if task.is_cancelled():
                     task.remove_tag(CANCEL_TAG)
@@ -2215,7 +2219,10 @@ class MainWindow(QMainWindow):
             return
         before_state = snapshot_dict(task)
         before_text = format_task_snapshot(task)
+        was_done = task.is_done()
         apply_morning_action(task, action)
+        if action == ACTION_DONE and not was_done and task.is_done():
+            self._advance_preset_chain(task)
         if self.demo_mode:
             self.reload_boards()
             return
@@ -2746,7 +2753,10 @@ class MainWindow(QMainWindow):
         if self._is_lists_screen():
             self.new_task()
             return
+        from .theme import menu_qss
+
         menu = QMenu(self)
+        menu.setStyleSheet(menu_qss())
         action_task = menu.addAction("Новая задача")
         action_preset = menu.addAction("Новый Preset")
         chosen = menu.exec(
@@ -2757,12 +2767,25 @@ class MainWindow(QMainWindow):
         elif chosen == action_preset:
             self.open_preset_window()
 
+    def _apply_theme_chrome(self) -> None:
+        from .theme import apply_palette, readable
+
+        apply_palette(QApplication.instance())
+        self.title_label.setStyleSheet(
+            f"font-size: 18px; font-weight: 600; padding: 8px; color:{readable('#222222')};"
+        )
+        self.screen_label.setStyleSheet(f"color:{readable('#333333')};")
+        self.filter_label.setStyleSheet(f"color:{readable('#886600')}; padding: 4px;")
+        self.controls.update()
+        self.update()
+
     def toggle_theme(self) -> None:
         from .theme import board_style, toggle
 
         toggle()
         style = board_style()
         self.setStyleSheet(style)
+        self._apply_theme_chrome()
         for index in range(self.stack.count()):
             widget = self.stack.widget(index)
             if hasattr(widget, "apply_theme"):
@@ -2772,7 +2795,7 @@ class MainWindow(QMainWindow):
         self.reload_boards()
 
     def open_preset_window(self, preset_name: str | None = None) -> None:
-        from .preset_store import load_steps
+        from .preset_store import load_steps, step_index
         from .preset_window import PresetWindow
         from .tags import INBOX_TAG
 
@@ -2786,7 +2809,7 @@ class MainWindow(QMainWindow):
         if not steps:
             return
         already = any(
-            (task.preset_name or "") == dialog.saved_name and int(task.preset_step or -1) == 0
+            (task.preset_name or "") == dialog.saved_name and step_index(task.preset_step) == 0
             for task in self.store.tasks
         )
         if already:

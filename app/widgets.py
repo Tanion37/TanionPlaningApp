@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .colors import border_color, font_color
-from .theme import SELECT, card_bg, readable
+from .theme import SELECT, card_bg, is_dark, readable
 from .models import Task, parse_date
 from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
@@ -544,18 +544,24 @@ class TagCircle(QWidget):
         s = self._size
         if self.highlighted or self.selected:
             color = QColor("#FFD700")
+            border = QColor("#333333")
+            text = QColor("#1565C0" if self.tag_key == "ПРОГД" else "#000000")
+        elif is_dark():
+            color = QColor(card_bg())
+            border = QColor(readable("#333333"))
+            text = QColor(readable("#1565C0" if self.tag_key == "ПРОГД" else "#000000"))
         else:
             color = QColor("#F0F0F0")
-        pen = QPen(QColor("#333333"), 2 if s >= 40 else 1)
-        painter.setPen(pen)
+            border = QColor("#333333")
+            text = QColor("#1565C0" if self.tag_key == "ПРОГД" else "#000000")
+        painter.setPen(QPen(border, 2 if s >= 40 else 1))
         painter.setBrush(color)
         painter.drawEllipse(1, 1, s - 2, s - 2)
+        painter.setPen(text)
         if self.tag_key == "ПРОГД":
-            painter.setPen(QColor("#1565C0"))
             font = QFont("Segoe UI", 11 if s >= 40 else 8)
             font.setBold(True)
         else:
-            painter.setPen(QColor("#000000"))
             font = QFont("Segoe UI Emoji", 14 if s >= 40 else 11)
         painter.setFont(font)
         painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self.symbol)
@@ -709,17 +715,26 @@ class CircleButton(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         enabled = self.isEnabled()
-        pen = QColor("#333333") if enabled else QColor("#AAAAAA")
         if not enabled:
-            brush = QColor("#F0F0F0")
+            brush = QColor(card_bg() if is_dark() else "#F0F0F0")
+            pen = QColor(readable("#AAAAAA"))
+            text = QColor(readable("#999999"))
         elif self._active:
             brush = QColor("#BBDEFB")
+            pen = QColor("#333333")
+            text = QColor("#000000")
+        elif is_dark():
+            brush = QColor(card_bg())
+            pen = QColor(readable("#333333"))
+            text = QColor(readable("#000000"))
         else:
             brush = QColor("#FFFFFF")
+            pen = QColor("#333333")
+            text = QColor("#000000")
         painter.setPen(QPen(pen, 2))
         painter.setBrush(brush)
         painter.drawEllipse(1, 1, CIRCLE - 2, CIRCLE - 2)
-        painter.setPen(QColor("#000000") if enabled else QColor("#999999"))
+        painter.setPen(text)
         font = QFont("Segoe UI", 16)
         painter.setFont(font)
         painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self.label)

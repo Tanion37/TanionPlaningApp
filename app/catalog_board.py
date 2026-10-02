@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMessageBox,
     QPushButton,
@@ -42,10 +44,13 @@ class CatalogCanvas(QWidget):
         self.projects = QListWidget()
         box.addWidget(self.projects, 1)
         row = QHBoxLayout()
+        edit = QPushButton("Править")
         rename = QPushButton("Переименовать")
         remove = QPushButton("Удалить")
+        edit.clicked.connect(self._edit_project)
         rename.clicked.connect(self._rename_project)
         remove.clicked.connect(self._delete_project)
+        row.addWidget(edit)
         row.addWidget(rename)
         row.addWidget(remove)
         box.addLayout(row)
@@ -89,6 +94,37 @@ class CatalogCanvas(QWidget):
     def _current_preset(self) -> str:
         item = self.presets.currentItem()
         return item.text().strip() if item else ""
+
+    def _edit_project(self) -> None:
+        old = self._current_project()
+        if not old:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Править проект")
+        dialog.resize(420, 360)
+        box = QVBoxLayout(dialog)
+        box.addWidget(QLabel("Название"))
+        name_edit = QLineEdit(old)
+        box.addWidget(name_edit)
+        box.addWidget(QLabel("Задачи проекта"))
+        tasks = QListWidget()
+        for task in self.main.store.tasks:
+            if (task.project or "").strip() == old:
+                tasks.addItem(task.title or task.id)
+        box.addWidget(tasks, 1)
+        save = QPushButton("Сохранить")
+        save.clicked.connect(dialog.accept)
+        box.addWidget(save)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        new = resolve_project_name(name_edit.text().strip(), self.main.store.tasks) or name_edit.text().strip()
+        if not new or new == old:
+            return
+        for task in self.main.store.tasks:
+            if (task.project or "").strip() == old:
+                task.project = new
+        self.main.request_save()
+        self.main.reload_boards()
 
     def _rename_project(self) -> None:
         old = self._current_project()
