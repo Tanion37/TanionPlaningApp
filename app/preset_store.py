@@ -64,11 +64,13 @@ def steps_from_tasks(tasks: list[Task]) -> list[dict]:
 
 def _step_dict(task: Task) -> dict:
     return {
+        "id": task.id,
         "title": (task.title or "").strip(),
         "role": task.role or "",
         "project": task.project or "",
         "description": task.description or "",
         "tags": list(task.tags or []),
+        "after": list(task.after_ids),
     }
 
 
@@ -98,15 +100,19 @@ def load_steps(name: str) -> list[dict]:
         if not title:
             continue
         tags = item.get("tags") or []
-        steps.append(
-            {
-                "title": title,
-                "role": str(item.get("role") or ""),
-                "project": str(item.get("project") or ""),
-                "description": str(item.get("description") or ""),
-                "tags": [str(tag) for tag in tags if str(tag).strip()],
-            }
-        )
+        step = {
+            "title": title,
+            "role": str(item.get("role") or ""),
+            "project": str(item.get("project") or ""),
+            "description": str(item.get("description") or ""),
+            "tags": [str(tag) for tag in tags if str(tag).strip()],
+        }
+        if item.get("id"):
+            step["id"] = str(item.get("id"))
+        if "after" in item:
+            raw_after = item.get("after") or []
+            step["after"] = [str(link) for link in raw_after if str(link).strip()]
+        steps.append(step)
     return steps
 
 
@@ -136,6 +142,49 @@ def apply_step(task: Task, step: dict, *, preset_name: str, step_index: int) -> 
     task.tags = list(step.get("tags") or [])
     task.preset_name = preset_name
     task.preset_step = step_index
+
+
+def root_indexes(steps: list[dict]) -> list[int]:
+    """Индексы задач без входящей связи. Старый файл без графа — только первая."""
+    if not steps:
+        return []
+    if not any(step.get("id") for step in steps):
+        return [0]
+    children: set[str] = set()
+    for step in steps:
+        for link in step.get("after") or []:
+            children.add(str(link))
+    roots = [index for index, step in enumerate(steps) if str(step.get("id") or "") not in children]
+    return roots or [0]
+
+
+def tasks_from_steps(steps: list[dict]) -> list[Task]:
+    """Восстановить граф. Старый файл без id остаётся линейной цепочкой."""
+    if not steps:
+        return []
+    if not any(step.get("id") for step in steps):
+        return chain_tasks_from_steps(steps)
+    tasks: list[Task] = []
+    for index, step in enumerate(steps, start=1):
+        task = Task(
+            id=str(step.get("id") or f"{index:03d}"),
+            title=step["title"],
+            role=step.get("role") or "",
+            project=step.get("project") or "",
+            description=step.get("description") or "",
+            tags=list(step.get("tags") or []),
+            after_ids=[str(link) for link in (step.get("after") or [])],
+        )
+        tasks.append(task)
+    by_id = {task.id: task for task in tasks}
+    for task in tasks:
+        task.after_ids = [item for item in task.after_ids if item in by_id and item != task.id]
+        task.after_count = len(task.after_ids)
+        for child_id in task.after_ids:
+            child = by_id[child_id]
+            if not child.prev_id:
+                child.prev_id = task.id
+    return tasks
 
 
 def chain_tasks_from_steps(steps: list[dict]) -> list[Task]:
@@ -192,31 +241,90 @@ def step_index(value) -> int:
         return -1
 
 
-def spawn_next_inbox(store, task: Task):
-    """После выполнения шага создать следующий из Preset во входящих."""
+def _inbox_tags(raw: list) -> list[str]:
+    from .tags import CANCEL_TAG, DONE_TAG
+
+    tags = [tag for tag in raw if tag not in {INBOX_TAG, DONE_TAG, CANCEL_TAG}]
+    tags.insert(0, INBOX_TAG)
+    return tags
+
+
+def spawn_roots_inbox(store, preset_name: str) -> list:
+    """Поставить корневые задачи пресета во входящие. Каждый запуск — новые карточки."""
+    name = (preset_name or "").strip()
+    steps = load_steps(name)
+    created = []
+    for index in root_indexes(steps):
+        data = steps[index]
+        created.append(
+            store.add_task(
+                data["title"],
+                persist=False,
+                role=data.get("role") or "",
+                project=data.get("project") or "",
+                description=data.get("description") or "",
+                tags=_inbox_tags(list(data.get("tags") or [])),
+                preset_name=name,
+                preset_step=index,
+                source="preset",
+            )
+        )
+    return created
+
+
+def _child_indexes(steps: list[dict], step: int) -> list[int]:
+    node = steps[step]
+    if "after" in node:
+        by_id = {str(item.get("id")): index for index, item in enumerate(steps) if item.get("id")}
+        found: list[int] = []
+        for link in node.get("after") or []:
+            index = by_id.get(str(link))
+            if index is not None and index not in found:
+                found.append(index)
+        return found
+    nxt = step + 1
+    return [nxt] if nxt < len(steps) else []
+
+
+def spawn_linked_inbox(store, task: Task) -> list:
+    """После выполнения узла создать все задачи, связанные с ним напрямую, во входящих."""
     name = (getattr(task, "preset_name", "") or "").strip()
     step = step_index(getattr(task, "preset_step", -1))
     if not name or step < 0:
-        return None
+        return []
     steps = load_steps(name)
-    nxt = step + 1
-    if nxt >= len(steps):
-        return None
-    for other in store.tasks:
-        if (other.preset_name or "") == name and step_index(other.preset_step) == nxt:
-            return None
-    data = steps[nxt]
-    tags = [tag for tag in data.get("tags") or [] if tag != INBOX_TAG]
-    tags.insert(0, INBOX_TAG)
-    created = store.add_task(
-        data["title"],
-        persist=False,
-        role=data.get("role") or "",
-        project=data.get("project") or "",
-        description=data.get("description") or "",
-        tags=tags,
-        preset_name=name,
-        preset_step=nxt,
-        source="preset",
-    )
+    if step >= len(steps):
+        return []
+    created = []
+    for index in _child_indexes(steps, step):
+        if any(
+            (other.prev_id or "") == task.id
+            and (other.preset_name or "") == name
+            and step_index(other.preset_step) == index
+            for other in store.tasks
+        ):
+            continue
+        data = steps[index]
+        child = store.add_task(
+            data["title"],
+            persist=False,
+            role=data.get("role") or "",
+            project=data.get("project") or "",
+            description=data.get("description") or "",
+            tags=_inbox_tags(list(data.get("tags") or [])),
+            preset_name=name,
+            preset_step=index,
+            prev_id=task.id,
+            source="preset",
+        )
+        if child.id not in task.after_ids:
+            task.after_ids.append(child.id)
+            task.after_count = len(task.after_ids)
+        created.append(child)
     return created
+
+
+def spawn_next_inbox(store, task: Task):
+    """Совместимость: первая из следующих связанных задач."""
+    created = spawn_linked_inbox(store, task)
+    return created[0] if created else None

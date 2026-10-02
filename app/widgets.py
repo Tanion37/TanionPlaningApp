@@ -33,8 +33,8 @@ from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
 TASK_W = 200
 TASK_H = 50
-# Нижняя полоса: роль, Preset, проект, «+», связанная задача.
-TASK_BLOCK_H = TASK_H + 124
+# Нижняя полоса: роль, «+», связанная задача.
+TASK_BLOCK_H = TASK_H + 76
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
 TAG_ICON = 32
@@ -50,8 +50,6 @@ class TaskBlock(QWidget):
     clicked = pyqtSignal(str)  # task_id
     role_changed = pyqtSignal(str, str)  # task_id, role
     add_linked = pyqtSignal(str, str, object)  # task_id, имя, тексты остальных полей
-    preset_picked = pyqtSignal(str, str)  # task_id, имя файла Preset
-    project_picked = pyqtSignal(str, str)  # task_id, проект
 
     PROJECT_BAND = 16
 
@@ -59,12 +57,9 @@ class TaskBlock(QWidget):
         self,
         task: Task,
         parent: QWidget | None = None,
-        *,
-        show_catalogs: bool = True,
     ) -> None:
         super().__init__(parent)
         self.task = task
-        self.show_catalogs = show_catalogs
         self._marked = False
         self.setFixedSize(TASK_W, TASK_BLOCK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
@@ -99,22 +94,6 @@ class TaskBlock(QWidget):
         self._plus_btn.setToolTip("Добавить поле имени")
         self._plus_btn.clicked.connect(self._add_row)
 
-        self._preset_label = QLabel("Preset", self)
-        self._preset_label.setFont(QFont("Segoe UI", 8))
-        self._preset = QComboBox(self)
-        self._preset.setFont(QFont("Segoe UI", 8))
-        self._preset.currentIndexChanged.connect(self._on_preset)
-        self._project_label = QLabel("Проект", self)
-        self._project_label.setFont(QFont("Segoe UI", 8))
-        self._project = QComboBox(self)
-        self._project.setFont(QFont("Segoe UI", 8))
-        self._project.currentIndexChanged.connect(self._on_project)
-        if not self.show_catalogs:
-            self._preset_label.hide()
-            self._preset.hide()
-            self._project_label.hide()
-            self._project.hide()
-
         self._linked = QLineEdit(self)
         self._linked.setFont(QFont("Segoe UI", 8))
         self._linked.setReadOnly(True)
@@ -126,13 +105,6 @@ class TaskBlock(QWidget):
         y = TASK_H + 2
         self._role.setGeometry(4, y, TASK_W - 8, 22)
         y += 24
-        if self.show_catalogs:
-            self._preset_label.setGeometry(4, y, 52, 22)
-            self._preset.setGeometry(58, y, TASK_W - 62, 22)
-            y += 24
-            self._project_label.setGeometry(4, y, 52, 22)
-            self._project.setGeometry(58, y, TASK_W - 62, 22)
-            y += 24
         self._plus_btn.setGeometry(4, y, 22, 22)
         y += 24
         for row in self._rows:
@@ -156,46 +128,6 @@ class TaskBlock(QWidget):
     def set_marked(self, on: bool) -> None:
         self._marked = bool(on)
         self.update()
-
-    def set_preset_names(self, names: list[str]) -> None:
-        if not self.show_catalogs:
-            return
-        current = self.task.preset_name or ""
-        self._preset.blockSignals(True)
-        self._preset.clear()
-        self._preset.addItem("", "")
-        for name in names:
-            self._preset.addItem(name, name)
-        index = self._preset.findData(current)
-        self._preset.setCurrentIndex(index if index >= 0 else 0)
-        self._preset.blockSignals(False)
-
-    def set_project_names(self, names: list[str]) -> None:
-        if not self.show_catalogs:
-            return
-        current = (self.task.project or "").strip()
-        self._project.blockSignals(True)
-        self._project.clear()
-        self._project.addItem("", "")
-        for name in names:
-            self._project.addItem(name, name)
-        if current and self._project.findData(current) < 0:
-            self._project.addItem(current, current)
-        index = self._project.findData(current)
-        self._project.setCurrentIndex(index if index >= 0 else 0)
-        self._project.blockSignals(False)
-
-    def _on_preset(self, _index: int) -> None:
-        name = str(self._preset.currentData() or "")
-        if name == (self.task.preset_name or ""):
-            return
-        self.preset_picked.emit(self.task.id, name)
-
-    def _on_project(self, _index: int) -> None:
-        name = str(self._project.currentData() or "")
-        if name == (self.task.project or "").strip():
-            return
-        self.project_picked.emit(self.task.id, name)
 
     def set_linked_title(self, title: str) -> None:
         self._linked_title = (title or "").strip()
@@ -1259,6 +1191,29 @@ class NewTaskDialog(_EnterAcceptDialog):
         preset_row.addStretch(1)
         root.addLayout(preset_row)
 
+        from .preset_store import list_preset_names
+
+        self._chain_preset = ""
+        self._chain_step = -1
+        self._chain_role = ""
+        catalog = QHBoxLayout()
+        catalog.setSpacing(6)
+        catalog.addWidget(QLabel("Проект"))
+        self.project_combo = QComboBox()
+        self.project_combo.addItem("", "")
+        for name in project_names or []:
+            self.project_combo.addItem(name, name)
+        self.project_combo.currentIndexChanged.connect(self._on_project_combo)
+        catalog.addWidget(self.project_combo, 1)
+        catalog.addWidget(QLabel("Preset"))
+        self.file_preset = QComboBox()
+        self.file_preset.addItem("", "")
+        for name in list_preset_names():
+            self.file_preset.addItem(name, name)
+        self.file_preset.currentIndexChanged.connect(self._on_file_preset)
+        catalog.addWidget(self.file_preset, 1)
+        root.addLayout(catalog)
+
         form = QFormLayout()
 
         self.title_edit = QLineEdit()
@@ -1343,6 +1298,44 @@ class NewTaskDialog(_EnterAcceptDialog):
         root.addWidget(_ok_left_button_box(self._try_accept, self.reject))
         self._install_enter_accept()
 
+    def _on_project_combo(self, _index: int) -> None:
+        name = str(self.project_combo.currentData() or "")
+        if name:
+            self.project_edit.setText(name)
+
+    def _sync_project_combo(self, name: str) -> None:
+        self.project_combo.blockSignals(True)
+        if name and self.project_combo.findData(name) < 0:
+            self.project_combo.addItem(name, name)
+        index = self.project_combo.findData(name) if name else 0
+        self.project_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.project_combo.blockSignals(False)
+
+    def _on_file_preset(self, _index: int) -> None:
+        from .preset_store import load_steps, root_indexes
+
+        name = str(self.file_preset.currentData() or "")
+        if not name:
+            self._chain_preset = ""
+            self._chain_step = -1
+            self._chain_role = ""
+            return
+        steps = load_steps(name)
+        roots = root_indexes(steps)
+        if not steps or not roots:
+            return
+        index = roots[0]
+        step = steps[index]
+        self.title_edit.setText(step.get("title") or "")
+        project = str(step.get("project") or "")
+        self.project_edit.setText(project)
+        self._sync_project_combo(project)
+        self.description_edit.setPlainText(step.get("description") or "")
+        self.tag_picker.set_keys(list(step.get("tags") or []))
+        self._chain_preset = name
+        self._chain_step = index
+        self._chain_role = str(step.get("role") or "")
+
     def _on_preset(self, name: str) -> None:
         from .create_presets import tags_for_preset
 
@@ -1385,6 +1378,9 @@ class NewTaskDialog(_EnterAcceptDialog):
             "executor": self.executor.text().strip() or DEFAULT_EXECUTOR,
             "tags": self.tag_picker.selected_keys(),
             "create_preset": self._create_preset,
+            "chain_preset": self._chain_preset,
+            "chain_step": self._chain_step,
+            "chain_role": self._chain_role,
         }
 
 

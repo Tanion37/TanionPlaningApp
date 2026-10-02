@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFileDialog,
+    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
-    QInputDialog,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -16,14 +20,14 @@ from PyQt6.QtWidgets import (
 
 from .models import Task
 from .preset_store import (
-    chain_tasks_from_steps,
     load_steps,
     presets_dir,
     remove_with_outgoing,
     save_preset,
+    tasks_from_steps,
 )
 from .task_graph import add_linked_task, linked_task_title
-from .widgets import TaskBlock
+from .widgets import TASK_W, TaskBlock
 
 
 class PresetWindow(QDialog):
@@ -34,16 +38,20 @@ class PresetWindow(QDialog):
         self.saved_name = ""
         self.tasks: list[Task] = []
         self.selected_id: str | None = None
+        self._blocks: list[TaskBlock] = []
+        self._cols = 0
         if preset_name:
-            self.tasks = chain_tasks_from_steps(load_steps(preset_name))
+            self.tasks = tasks_from_steps(load_steps(preset_name))
             self.saved_name = preset_name
 
         root = QVBoxLayout(self)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.host = QWidget()
-        self.cards = QVBoxLayout(self.host)
-        self.cards.addStretch(1)
+        self.grid = QGridLayout(self.host)
+        self.grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(12)
         self.scroll.setWidget(self.host)
         root.addWidget(self.scroll, 1)
 
@@ -62,18 +70,49 @@ class PresetWindow(QDialog):
         self._rebuild()
 
     def _create_task(self) -> None:
-        title, ok = QInputDialog.getText(self, "Новая задача", "Название задачи")
-        if not ok:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Создать задачу")
+        box = QVBoxLayout(dialog)
+        form = QFormLayout()
+        title_edit = QLineEdit()
+        parent_box = QComboBox()
+        parent_box.addItem("Корневая задача", "")
+        for task in self.tasks:
+            label = (task.title or task.id).strip()
+            parent_box.addItem(label, task.id)
+        form.addRow("Название", title_edit)
+        form.addRow("Связать с", parent_box)
+        box.addLayout(form)
+        row = QHBoxLayout()
+        ok_btn = QPushButton("ОК")
+        cancel_btn = QPushButton("Отмена")
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        row.addWidget(ok_btn)
+        row.addWidget(cancel_btn)
+        box.addLayout(row)
+        if dialog.exec() != dialog.DialogCode.Accepted:
             return
-        title = title.strip()
+        title = title_edit.text().strip()
         if not title:
             return
-        used = {task.id for task in self.tasks}
-        number = 1
-        while f"{number:03d}" in used:
-            number += 1
-        self.tasks.append(Task(id=f"{number:03d}", title=title))
-        self.selected_id = self.tasks[-1].id
+        parent_id = str(parent_box.currentData() or "")
+        if parent_id:
+            parent = next((task for task in self.tasks if task.id == parent_id), None)
+            if parent is None:
+                return
+            created = add_linked_task(self.tasks, parent, title)
+            if created is None:
+                return
+            self.selected_id = created.id
+        else:
+            used = {task.id for task in self.tasks}
+            number = 1
+            while f"{number:03d}" in used:
+                number += 1
+            created = Task(id=f"{number:03d}", title=title)
+            self.tasks.append(created)
+            self.selected_id = created.id
         self._rebuild()
 
     def _delete_selected(self) -> None:
@@ -104,33 +143,55 @@ class PresetWindow(QDialog):
         self._mark()
 
     def _block_for(self, task_id: str) -> TaskBlock | None:
-        for index in range(self.cards.count()):
-            widget = self.cards.itemAt(index).widget()
-            if isinstance(widget, TaskBlock) and widget.task.id == task_id:
-                return widget
+        for block in self._blocks:
+            if block.task.id == task_id:
+                return block
         return None
 
     def _mark(self) -> None:
-        for index in range(self.cards.count()):
-            widget = self.cards.itemAt(index).widget()
-            if isinstance(widget, TaskBlock):
-                widget.set_marked(widget.task.id == self.selected_id)
+        for block in self._blocks:
+            block.set_marked(block.task.id == self.selected_id)
 
     def _rebuild(self) -> None:
-        while self.cards.count():
-            item = self.cards.takeAt(0)
+        while self.grid.count():
+            item = self.grid.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        self._blocks = []
         for task in self.tasks:
-            block = TaskBlock(task, show_catalogs=False)
+            block = TaskBlock(task)
             block.set_linked_title(linked_task_title(self.tasks, task))
             block.set_marked(task.id == self.selected_id)
             block.clicked.connect(self._select)
             block.add_linked.connect(self._on_add_linked)
             block.role_changed.connect(self._on_role)
-            self.cards.addWidget(block)
-        self.cards.addStretch(1)
+            self._blocks.append(block)
+        self._cols = 0
+        self._reflow()
+
+    def _reflow(self) -> None:
+        if not self._blocks:
+            return
+        width = max(TASK_W, self.scroll.viewport().width() - 8)
+        cols = max(1, width // (TASK_W + 12))
+        if cols == self._cols:
+            return
+        self._cols = cols
+        for block in self._blocks:
+            self.grid.removeWidget(block)
+        for index, block in enumerate(self._blocks):
+            row, col = divmod(index, cols)
+            self.grid.addWidget(block, row, col, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._reflow()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._cols = 0
+        self._reflow()
 
     def _save(self) -> None:
         named = [task for task in self.tasks if (task.title or "").strip()]

@@ -899,14 +899,9 @@ class BoardCanvas(QWidget):
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
         block.add_linked.connect(self.main.on_task_add_linked)
-        block.preset_picked.connect(self.main.on_task_preset)
-        block.project_picked.connect(self.main.on_task_project)
-        from .preset_store import list_preset_names
         from .task_graph import linked_task_title
 
         block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
-        block.set_preset_names(list_preset_names())
-        block.set_project_names(self.main._project_names())
         block.set_marked(task.id == self.main.selected_task_id)
         return block
 
@@ -2067,6 +2062,7 @@ class MainWindow(QMainWindow):
                     task.remove_tag(CANCEL_TAG)
                 else:
                     apply_status_tag(task, CANCEL_TAG)
+                    self._cancel_linked_subtree(task)
                     log_action = "cancelled"
                     log_detail = ""
             else:
@@ -2370,6 +2366,8 @@ class MainWindow(QMainWindow):
             apply_answers_tag(task)
         else:
             apply_status_tag(task, key)
+        if canonicalize_tag_key(key) == CANCEL_TAG and task.is_cancelled():
+            self._cancel_linked_subtree(task)
         if not was_done and task.is_done():
             self._advance_preset_chain(task)
 
@@ -2795,9 +2793,8 @@ class MainWindow(QMainWindow):
         self.reload_boards()
 
     def open_preset_window(self, preset_name: str | None = None) -> None:
-        from .preset_store import load_steps, step_index
+        from .preset_store import spawn_roots_inbox
         from .preset_window import PresetWindow
-        from .tags import INBOX_TAG
 
         if self.demo_mode:
             QMessageBox.information(self, "ДЕМО", "В демо-режиме Preset отключён.")
@@ -2805,89 +2802,66 @@ class MainWindow(QMainWindow):
         dialog = PresetWindow(self, preset_name)
         if dialog.exec() != dialog.DialogCode.Accepted or not dialog.saved_name:
             return
-        steps = load_steps(dialog.saved_name)
-        if not steps:
-            return
-        already = any(
-            (task.preset_name or "") == dialog.saved_name and step_index(task.preset_step) == 0
-            for task in self.store.tasks
-        )
-        if already:
-            self.reload_boards()
-            return
-        first = steps[0]
-        tags = [tag for tag in first.get("tags") or [] if tag != INBOX_TAG]
-        tags.insert(0, INBOX_TAG)
-        self.store.add_task(
-            first["title"],
-            role=first.get("role") or "",
-            project=first.get("project") or "",
-            description=first.get("description") or "",
-            tags=tags,
-            preset_name=dialog.saved_name,
-            preset_step=0,
-            source="preset",
-        )
-        self.reload_boards()
-        self._sync_history_buttons()
-
-    def on_task_preset(self, task_id: str, name: str) -> None:
-        from .preset_store import apply_step, load_steps
-
-        task = self._find_task(task_id)
-        if task is None or self.demo_mode:
-            return
-        if not name:
-            task.preset_name = ""
-            task.preset_step = -1
-            self.request_save()
-            self.reload_boards()
-            return
-        steps = load_steps(name)
-        if not steps:
-            return
-        before_state = snapshot_dict(task)
-        apply_step(task, steps[0], preset_name=name, step_index=0)
-        append_log(
-            "changed",
-            task,
-            detail=f"preset {name}",
-            source="app",
-            before_state=before_state,
-        )
+        created = spawn_roots_inbox(self.store, dialog.saved_name)
+        for task in created:
+            append_log("created", task, detail="корень Preset", source="app")
+            self._note_task_change(task, action="upsert")
         self.request_save()
         self.reload_boards()
         self._sync_history_buttons()
 
-    def on_task_project(self, task_id: str, name: str) -> None:
-        from .projects import resolve_project_name
+    def _cancel_linked_subtree(self, task: Task) -> None:
+        from .task_graph import subtree_tasks
 
-        task = self._find_task(task_id)
-        if task is None:
-            return
-        project = resolve_project_name(name, self.visible_tasks()) if name else ""
-        if (task.project or "") == project:
-            return
+        pool = self.demo_tasks if self.demo_mode else self.store.tasks
+        for other in subtree_tasks(pool, task.id, include_self=False):
+            if not other.is_cancelled():
+                apply_status_tag(other, CANCEL_TAG)
+
+    def _delete_task_subtree(self, task_id: str) -> None:
+        from .task_graph import subtree_tasks
+
         if self.demo_mode:
-            task.project = project
-            self.reload_boards()
             return
-        before_state = snapshot_dict(task)
-        task.project = project
-        append_log("changed", task, detail="проект", source="app", before_state=before_state)
+        victims = subtree_tasks(self.store.tasks, task_id, include_self=True)
+        if not victims:
+            return
+        drop = {item.id for item in victims}
+        for item in victims:
+            before = format_task_snapshot(item)
+            before_state = snapshot_dict(item)
+            self.store.remove_task(item.id, persist=False)
+            append_log(
+                "changed",
+                task_id=item.id,
+                before=before,
+                after="(удалено)",
+                detail="удаление ветки",
+                source="app",
+                before_state=before_state,
+                after_state=None,
+            )
+        for item in self.store.tasks:
+            item.after_ids = [link for link in item.after_ids if link not in drop]
+            if item.prev_id in drop:
+                item.prev_id = ""
+            item.after_count = len(item.after_ids)
+        if self.selected_task_id in drop:
+            self.selected_task_id = None
         self.request_save()
         self.reload_boards()
         self._sync_history_buttons()
 
     def _advance_preset_chain(self, task: Task) -> None:
-        from .preset_store import spawn_next_inbox
+        from .preset_store import spawn_linked_inbox
 
         if self.demo_mode:
             return
-        created = spawn_next_inbox(self.store, task)
-        if created is None:
+        created = spawn_linked_inbox(self.store, task)
+        if not created:
             return
-        append_log("created", created, detail="следующий шаг Preset", source="app")
+        for item in created:
+            append_log("created", item, detail="следующий шаг Preset", source="app")
         self.request_save()
 
     def new_task(self) -> None:
@@ -2926,6 +2900,9 @@ class MainWindow(QMainWindow):
         if x is not None and y is not None:
             data["pos_x"] = x
             data["pos_y"] = y
+        chain_preset = str(data.pop("chain_preset", "") or "")
+        chain_step = data.pop("chain_step", -1)
+        chain_role = str(data.pop("chain_role", "") or "")
         preset = data.pop("create_preset", None) or dlg.create_preset()
         tags = [canonicalize_tag_key(t) for t in data.get("tags") or []]
         tags = [t for t in tags if t]
@@ -2946,6 +2923,20 @@ class MainWindow(QMainWindow):
                 payload.pop("pos_x", None)
                 payload.pop("pos_y", None)
             task = self.store.add_task(persist=False, **payload)
+            if i == 0 and chain_preset and int(chain_step if chain_step is not None else -1) >= 0:
+                from .tags import CANCEL_TAG as _CANCEL
+                from .tags import DONE_TAG as _DONE
+                from .tags import INBOX_TAG as _INBOX
+
+                task.preset_name = chain_preset
+                task.preset_step = int(chain_step)
+                if chain_role:
+                    task.role = chain_role
+                task.remove_tag(_DONE)
+                task.remove_tag(_CANCEL)
+                task.completed_at = None
+                if not task.has_tag(_INBOX):
+                    task.tags.insert(0, _INBOX)
             if task.is_done() and task.completed_at is None:
                 task.completed_at = date.today()
             append_log("created", task, source="app", before_state=None)
@@ -3041,6 +3032,7 @@ class MainWindow(QMainWindow):
                 before_state=before_state,
             )
         elif task.is_cancelled() and not was_cancelled:
+            self._cancel_linked_subtree(task)
             append_log(
                 "cancelled",
                 task,
@@ -3066,6 +3058,15 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            from PyQt6.QtWidgets import QAbstractSpinBox, QComboBox, QPlainTextEdit
+
+            focus = QApplication.focusWidget()
+            if isinstance(focus, (QLineEdit, QPlainTextEdit, QComboBox, QAbstractSpinBox)):
+                super().keyPressEvent(event)
+                return
+            if self.selected_task_id and not self.demo_mode:
+                self._delete_task_subtree(self.selected_task_id)
+                return
             if self.selected_ann_id and not self.demo_mode:
                 if self.annotations.remove(self.selected_ann_id):
                     self.selected_ann_id = None
