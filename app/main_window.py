@@ -80,7 +80,7 @@ from .tags import (
 )
 from .widgets import (
     CIRCLE,
-    TASK_BLOCK_H,
+    TASK_H,
     TASK_W,
     CircleButton,
     EditTaskDialog,
@@ -748,8 +748,8 @@ class BoardCanvas(QWidget):
                     by = int(task.pos_y)
                 else:
                     bx, by = stack_x, stack_y
-                    stack_y += TASK_BLOCK_H + 8
-                    if stack_y + TASK_BLOCK_H > top + usable_h:
+                    stack_y += TASK_H + 8
+                    if stack_y + TASK_H > top + usable_h:
                         stack_y = top
                         stack_x += TASK_W + 8
                         if stack_x > max_x:
@@ -818,8 +818,8 @@ class BoardCanvas(QWidget):
                     else:
                         bx = min(x, max_task_x)
                         by = y
-                        y += TASK_BLOCK_H + 8
-                        if y + TASK_BLOCK_H > top + usable_h:
+                        y += TASK_H + 8
+                        if y + TASK_H > top + usable_h:
                             y = top
                             x += TASK_W + col_gap
                             bx = min(x, max_task_x)
@@ -895,11 +895,6 @@ class BoardCanvas(QWidget):
         block.double_clicked.connect(self.main.edit_task)
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
-        block.role_changed.connect(self.main.on_task_role)
-        block.add_linked.connect(self.main.on_task_add_linked)
-        from .task_graph import linked_task_title
-
-        block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
         return block
 
     def _rebuild_annotations(self) -> None:
@@ -950,7 +945,7 @@ class BoardCanvas(QWidget):
         task = self.store.get(task_id)
         if not task:
             return
-        if y + TASK_BLOCK_H > self.height() - self.tag_bar.height():
+        if y + TASK_H > self.height() - self.tag_bar.height():
             return
         task.pos_x = x
         task.pos_y = y
@@ -2349,103 +2344,6 @@ class MainWindow(QMainWindow):
         )
         append_log("created", new, source="app", before_state=None)
         self._note_task_change(new, action="upsert")
-
-    def _find_task(self, task_id: str) -> Task | None:
-        pool = self.demo_tasks if self.demo_mode else self.store.tasks
-        for task in pool:
-            if task.id == task_id:
-                return task
-        return None
-
-    def on_task_role(self, task_id: str, role: str) -> None:
-        from .roles import coerce_role
-
-        task = self._find_task(task_id)
-        if task is None:
-            return
-        role = coerce_role(role)
-        if task.role == role:
-            return
-        if self.demo_mode:
-            task.role = role
-            self.reload_boards()
-            return
-        before = format_task_snapshot(task)
-        before_state = snapshot_dict(task)
-        task.role = role
-        append_log(
-            "changed",
-            task,
-            before=before,
-            detail="роль",
-            source="app",
-            before_state=before_state,
-        )
-        self.request_save()
-        self._last_paint_key = None
-        self.reload_boards()
-        self._sync_history_buttons()
-
-    def _find_task_block(self, task_id: str):
-        board = self._board_for_screen(self._current_screen_id())
-        if board is None:
-            return None
-        blocks = getattr(board, "blocks", None)
-        if isinstance(blocks, dict) and task_id in blocks:
-            return blocks[task_id]
-        for block in getattr(board, "_blocks", []):
-            if getattr(block, "task", None) is not None and block.task.id == task_id:
-                return block
-        return None
-
-    def on_task_add_linked(self, task_id: str, title: str, drafts: object = ()) -> None:
-        from .task_graph import add_linked_task
-
-        parent = self._find_task(task_id)
-        name = (title or "").strip()
-        if parent is None or not name:
-            return
-        pending = [str(item) for item in (drafts or [])]
-        tasks = self.demo_tasks if self.demo_mode else self.store.tasks
-        if self.demo_mode:
-            add_linked_task(tasks, parent, name)
-            self.reload_boards()
-            self._restore_link_drafts(task_id, pending)
-            return
-        before = format_task_snapshot(parent)
-        before_state = snapshot_dict(parent)
-        child = add_linked_task(tasks, parent, name)
-        if child is None:
-            return
-        batch = uuid.uuid4().hex
-        append_log(
-            "created",
-            child,
-            detail="связанная задача",
-            source="app",
-            batch=batch,
-        )
-        append_log(
-            "changed",
-            parent,
-            before=before,
-            detail="связанная задача",
-            source="app",
-            before_state=before_state,
-            batch=batch,
-        )
-        self.request_save()
-        self._last_paint_key = None
-        self.reload_boards()
-        self._restore_link_drafts(task_id, pending)
-        self._sync_history_buttons()
-
-    def _restore_link_drafts(self, task_id: str, drafts: list[str]) -> None:
-        if not drafts:
-            return
-        block = self._find_task_block(task_id)
-        if block is not None and hasattr(block, "restore_drafts"):
-            block.restore_drafts(drafts)
 
     def on_task_clicked(self, task_id: str) -> None:
         if self.paint_mode:

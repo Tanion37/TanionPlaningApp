@@ -35,7 +35,7 @@ from .day_tasks import (
 from .layout_metrics import content_side_margins
 from .models import Task
 from .tags import display_symbol
-from .widgets import TASK_BLOCK_H, TASK_W, TagBar, TagCircle, TaskBlock
+from .widgets import TASK_H, TASK_W, TagBar, TagCircle, TaskBlock
 
 COL_W = TASK_W + 24
 COL_GAP = 12
@@ -382,11 +382,6 @@ class DayTasksCanvas(QWidget):
         block.double_clicked.connect(self.main.edit_task)
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
-        block.role_changed.connect(self.main.on_task_role)
-        block.add_linked.connect(self.main.on_task_add_linked)
-        from .task_graph import linked_task_title
-
-        block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
         self._blocks.append(block)
         return block
 
@@ -457,7 +452,7 @@ class DayTasksCanvas(QWidget):
             (self.sec_mozhno, SECTION_MOZHNO),
         ):
             n = len(sections[key])
-            sec.setMinimumHeight(36 + max(1, n) * (TASK_BLOCK_H + 6) + 12)
+            sec.setMinimumHeight(36 + max(1, n) * (TASK_H + 6) + 12)
 
         # ДЕНЬ
         while self.day_layout.count():
@@ -620,7 +615,7 @@ class DayTasksCanvas(QWidget):
 
     def handle_task_drop_position(self, task_id: str, x: float, y: float) -> None:
         """Drop: Горит/Нужно/Можно или колонка исполнителя."""
-        global_pos = self.mapToGlobal(QPoint(int(x + TASK_W / 2), int(y + TASK_BLOCK_H / 2)))
+        global_pos = self.mapToGlobal(QPoint(int(x + TASK_W / 2), int(y + TASK_H / 2)))
         for sec in (self.sec_gorit, self.sec_nuzhno, self.sec_mozhno):
             local = sec.mapFromGlobal(global_pos)
             if sec.rect().contains(local):

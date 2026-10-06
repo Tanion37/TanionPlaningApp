@@ -54,10 +54,6 @@ class Task:
     author_id: int | None = None
     chat_id: int | None = None
     source: str = "app"
-    role: str = ""  # значение StudioRole
-    after_count: int = 0  # сколько узлов сразу после этой карточки
-    after_ids: list[str] = field(default_factory=list)
-    prev_id: str = ""  # id узла, после которого стоит эта карточка
 
     def has_tag(self, key: str) -> bool:
         return key in self.tags

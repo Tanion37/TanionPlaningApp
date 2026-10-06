@@ -28,12 +28,10 @@ from PyQt6.QtWidgets import (
 
 from .colors import border_color, font_color
 from .models import Task, parse_date
-from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
+
 TASK_W = 200
 TASK_H = 50
-# Нижняя полоса: роль, «+», поле связанной задачи. Утренний разбор масштабирует TASK_H.
-TASK_BLOCK_H = TASK_H + 76
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
 TAG_ICON = 32
@@ -47,148 +45,23 @@ class TaskBlock(QWidget):
     double_clicked = pyqtSignal(str)  # task_id
     project_clicked = pyqtSignal(str)  # project name
     clicked = pyqtSignal(str)  # task_id
-    role_changed = pyqtSignal(str, str)  # task_id, role
-    add_linked = pyqtSignal(str, str, object)  # task_id, имя, тексты остальных полей
 
     PROJECT_BAND = 16
 
     def __init__(self, task: Task, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.task = task
-        self.setFixedSize(TASK_W, TASK_BLOCK_H)
+        self.setFixedSize(TASK_W, TASK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setAcceptDrops(True)
         self._drag_start: QPoint | None = None
         self._dragging = False
-        self._rows: list[dict] = []
-        self._linked_title = ""
         self._refresh_style()
-        self._build_chrome()
-        self._sync_chrome()
 
     def update_task(self, task: Task) -> None:
         self.task = task
         self._refresh_style()
-        self._sync_chrome()
         self.update()
-
-    def _build_chrome(self) -> None:
-        self._role = QComboBox(self)
-        self._role.setGeometry(4, TASK_H + 2, TASK_W - 8, 22)
-        self._role.setFont(QFont("Segoe UI", 8))
-        self._role.setToolTip("Роль")
-        self._role.addItem("роль", "")
-        for label in role_labels():
-            self._role.addItem(label, label)
-        self._role.currentIndexChanged.connect(self._on_role)
-        self._role.installEventFilter(self)
-
-        self._plus_btn = QPushButton("+", self)
-        self._plus_btn.setFont(QFont("Segoe UI", 8))
-        self._plus_btn.setToolTip("Добавить поле имени")
-        self._plus_btn.clicked.connect(self._add_row)
-
-        self._linked = QLineEdit(self)
-        self._linked.setFont(QFont("Segoe UI", 8))
-        self._linked.setReadOnly(True)
-        self._linked.setPlaceholderText("Связанная задача")
-        self._linked.setToolTip("Связанная задача")
-        self._layout_chrome()
-
-    def _layout_chrome(self) -> None:
-        y = TASK_H + 2
-        self._role.setGeometry(4, y, TASK_W - 8, 22)
-        y += 24
-        self._plus_btn.setGeometry(4, y, 22, 22)
-        y += 24
-        for row in self._rows:
-            row["edit"].setGeometry(4, y, TASK_W - 8, 22)
-            y += 24
-            row["add"].setGeometry(4, y, 94, 22)
-            row["del"].setGeometry(102, y, 94, 22)
-            y += 26
-        self._linked.setGeometry(4, y, TASK_W - 8, 22)
-        y += 26
-        self.setFixedSize(TASK_W, y)
-
-    def _sync_chrome(self) -> None:
-        role = coerce_role(self.task.role)
-        self._role.blockSignals(True)
-        index = self._role.findData(role)
-        self._role.setCurrentIndex(index if index >= 0 else 0)
-        self._role.blockSignals(False)
-        self._linked.setText(self._linked_title)
-
-    def set_linked_title(self, title: str) -> None:
-        self._linked_title = (title or "").strip()
-        if hasattr(self, "_linked"):
-            self._linked.setText(self._linked_title)
-
-    def _on_role(self, _index: int) -> None:
-        role = coerce_role(self._role.currentData())
-        if role == coerce_role(self.task.role):
-            return
-        self.role_changed.emit(self.task.id, role)
-
-    def _add_row(self) -> None:
-        row = self._append_row("")
-        row["edit"].setFocus()
-
-    def _append_row(self, text: str) -> dict:
-        edit = QLineEdit(self)
-        edit.setFont(QFont("Segoe UI", 8))
-        edit.setPlaceholderText("Имя задачи")
-        edit.setText(text)
-        add_btn = QPushButton("Добавить", self)
-        del_btn = QPushButton("Удалить", self)
-        for btn in (add_btn, del_btn):
-            btn.setFont(QFont("Segoe UI", 8))
-            btn.setStyleSheet("QPushButton { padding: 0px; }")
-        row = {"edit": edit, "add": add_btn, "del": del_btn}
-        add_btn.clicked.connect(lambda _checked=False, item=row: self._emit_add(item))
-        del_btn.clicked.connect(lambda _checked=False, item=row: self._remove_row(item))
-        edit.returnPressed.connect(lambda item=row: self._emit_add(item))
-        edit.show()
-        add_btn.show()
-        del_btn.show()
-        self._rows.append(row)
-        self._layout_chrome()
-        self.raise_()
-        self.updateGeometry()
-        return row
-
-    def restore_drafts(self, texts: list[str]) -> None:
-        """Вернуть поля ввода, которые не были нажаты «Добавить»."""
-        for text in texts:
-            self._append_row(text)
-        for row in self._rows:
-            if not row["edit"].text().strip():
-                row["edit"].setFocus()
-                return
-        if self._rows:
-            self._rows[0]["edit"].setFocus()
-
-    def _remove_row(self, row: dict) -> None:
-        if row not in self._rows:
-            return
-        self._rows.remove(row)
-        for key in ("edit", "add", "del"):
-            row[key].hide()
-            row[key].deleteLater()
-        self._layout_chrome()
-
-    def _emit_add(self, row: dict) -> None:
-        title = row["edit"].text().strip()
-        if not title:
-            return
-        others = [item["edit"].text() for item in self._rows if item is not row]
-        self.add_linked.emit(self.task.id, title, others)
-
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if watched is self._role and event.type() == QEvent.Type.Wheel:
-            event.ignore()
-            return True
-        return super().eventFilter(watched, event)
 
     def _refresh_style(self) -> None:
         today = date.today()
@@ -212,7 +85,7 @@ class TaskBlock(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(self._bd, 2))
         painter.setBrush(QColor("#FFFFFF"))
-        painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
+        painter.drawRect(1, 1, TASK_W - 2, TASK_H - 2)
 
         project = self._project_name()
         top = 4
@@ -244,7 +117,7 @@ class TaskBlock(QWidget):
             font.setStrikeOut(True)
         painter.setFont(font)
         painter.drawText(
-            QRect(6, top, TASK_W - 12, max(1, TASK_H - top - 4)),
+            self.rect().adjusted(6, top, -6, -4),
             int(
                 Qt.AlignmentFlag.AlignLeft
                 | Qt.AlignmentFlag.AlignVCenter
@@ -314,9 +187,9 @@ class TaskBlock(QWidget):
 
         on_left = bool(getattr(main, "_controls_on_left", False)) if main else False
         min_x = content_left(on_left, base=0)
-        max_x = max(min_x, host.width() - content_right(on_left, base=0) - self.width())
+        max_x = max(min_x, host.width() - content_right(on_left, base=0) - TASK_W)
         x = max(min_x, min(new_pos.x(), max_x))
-        y = max(0, min(new_pos.y(), max(0, host.height() - self.height() // 2)))
+        y = max(0, min(new_pos.y(), max(0, host.height() - TASK_H // 2)))
         self.move(int(x), int(y))
         self.raise_()
 

@@ -55,12 +55,6 @@ def format_task_snapshot(task: Task | None) -> str:
         parts.append("✅")
     if task.is_cancelled():
         parts.append("🗑")
-    role = (getattr(task, "role", "") or "").strip()
-    if role:
-        parts.append(role)
-    after_count = int(getattr(task, "after_count", 0) or 0)
-    if after_count:
-        parts.append(f"после {after_count}")
     return " ".join(parts)
 
 
@@ -90,10 +84,6 @@ def snapshot_dict(task: Task) -> dict[str, Any]:
         "author_id": task.author_id,
         "chat_id": task.chat_id,
         "source": task.source or "app",
-        "role": getattr(task, "role", "") or "",
-        "after_count": int(getattr(task, "after_count", 0) or 0),
-        "after_ids": list(getattr(task, "after_ids", None) or []),
-        "prev_id": getattr(task, "prev_id", "") or "",
         "text": format_task_snapshot(task),
     }
 
@@ -120,10 +110,6 @@ def task_from_state(snap: dict[str, Any]) -> Task:
         author_id=snap.get("author_id"),
         chat_id=snap.get("chat_id"),
         source=str(snap.get("source") or "app"),
-        role=str(snap.get("role") or ""),
-        after_count=int(snap.get("after_count") or 0),
-        after_ids=list(snap.get("after_ids") or []),
-        prev_id=str(snap.get("prev_id") or ""),
     )
 
 
@@ -147,15 +133,6 @@ def apply_state_to_task(task: Task, snap: dict[str, Any]) -> None:
         task.pos_x = snap.get("pos_x")
     if "pos_y" in snap:
         task.pos_y = snap.get("pos_y")
-    if "role" in snap:
-        task.role = str(snap.get("role") or "")
-    if "after_ids" in snap:
-        task.after_ids = [str(item) for item in (snap.get("after_ids") or []) if str(item)]
-        task.after_count = len(task.after_ids)
-    elif "after_count" in snap:
-        task.after_count = int(snap.get("after_count") or 0)
-    if "prev_id" in snap:
-        task.prev_id = str(snap.get("prev_id") or "")
 
 
 @dataclass
