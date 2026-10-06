@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
 )
 
 from .colors import border_color, font_color
-from .theme import card_bg, is_dark, readable
 from .layout_metrics import content_side_margins
 from .models import Task
 from .morning_review import (
@@ -92,32 +91,14 @@ class MorningButton(QPushButton):
                 " }"
             )
             return
-        if is_dark():
-            bg = card_bg()
-            fg = readable("#222222")
-            border = "#8A8498"
-            hover = "#5C5870"
-            pressed = "#6A6578"
-            disabled_bg = "#3A3844"
-            disabled_fg = "#B7B3C2"
-        else:
-            bg = "#FFFFFF"
-            fg = "#222222"
-            border = "#555555"
-            hover = "#F3F3F3"
-            pressed = "#E8E8E8"
-            disabled_bg = "#F7F7F7"
-            disabled_fg = "#999999"
         self.setStyleSheet(
             "QPushButton {"
-            f" background:{bg}; color:{fg}; border:2px solid {border}; border-radius:4px;"
+            " background:#FFFFFF; color:#222; border:2px solid #555; border-radius:4px;"
             f" padding:{pad_y}px {pad_x}px;"
             " }"
-            f"QPushButton:hover {{ background:{hover}; }}"
-            f"QPushButton:pressed {{ background:{pressed}; }}"
-            "QPushButton:disabled {"
-            f" color:{disabled_fg}; border-color:#CCC; background:{disabled_bg};"
-            " }"
+            "QPushButton:hover { background:#F3F3F3; }"
+            "QPushButton:pressed { background:#E8E8E8; }"
+            "QPushButton:disabled { color:#999; border-color:#CCC; background:#F7F7F7; }"
         )
 
 
@@ -170,11 +151,11 @@ class MorningTaskCard(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(self._bd, max(2, self._font_pt // 12)))
-        painter.setBrush(QColor(card_bg()))
+        painter.setBrush(QColor("#FFFFFF"))
         painter.drawRect(1, 1, self._tw - 2, self._th - 2)
 
         if self.task is None:
-            painter.setPen(QColor(readable(self._fg.name())))
+            painter.setPen(self._fg)
             font = QFont("Segoe UI", self._font_pt)
             painter.setFont(font)
             painter.drawText(
@@ -188,7 +169,7 @@ class MorningTaskCard(QWidget):
         top = 4
         if project:
             band = self._project_band()
-            painter.setPen(QColor(readable("#555555")))
+            painter.setPen(QColor("#555555"))
             pfont = QFont("Segoe UI", max(8, round(self._font_pt * 8 / 9)))
             pfont.setBold(True)
             painter.setFont(pfont)
@@ -202,7 +183,7 @@ class MorningTaskCard(QWidget):
             )
             top = band + 2
 
-        painter.setPen(QColor(readable(self._fg.name())))
+        painter.setPen(self._fg)
         font = QFont("Segoe UI Emoji", self._font_pt)
         if not font.exactMatch():
             font = QFont("Segoe UI", self._font_pt)
@@ -360,6 +341,12 @@ class MorningReviewCanvas(QWidget):
         for btn in (self.btn_minus, self.btn_plus):
             btn.setFixedSize(48, 48)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton { font-size:22px; font-weight:700; background:#FFFFFF;"
+                " border:2px solid #555; border-radius:4px; }"
+                "QPushButton:hover { background:#F3F3F3; }"
+                "QPushButton:disabled { color:#AAA; border-color:#CCC; }"
+            )
         self.btn_minus.setToolTip("Мельче шрифт только на этом экране")
         self.btn_plus.setToolTip("Крупнее шрифт только на этом экране")
         self.btn_minus.clicked.connect(lambda: self._nudge_font(-FONT_STEP))
@@ -434,32 +421,6 @@ class MorningReviewCanvas(QWidget):
         self.grid.setRowStretch(2, 1)
 
         self._apply_font()
-        self.apply_theme()
-
-    def apply_theme(self) -> None:
-        from .theme import board_style
-
-        self.setStyleSheet(board_style())
-        if is_dark():
-            zoom = (
-                "QPushButton { font-size:22px; font-weight:700; "
-                f"background:{card_bg()}; color:{readable('#222222')}; "
-                "border:2px solid #8A8498; border-radius:4px; }"
-                "QPushButton:hover { background:#5C5870; }"
-                "QPushButton:disabled { color:#B7B3C2; border-color:#666; }"
-            )
-        else:
-            zoom = (
-                "QPushButton { font-size:22px; font-weight:700; background:#FFFFFF; color:#222222;"
-                " border:2px solid #555; border-radius:4px; }"
-                "QPushButton:hover { background:#F3F3F3; }"
-                "QPushButton:disabled { color:#AAA; border-color:#CCC; }"
-            )
-        for btn in (self.btn_minus, self.btn_plus):
-            btn.setStyleSheet(zoom)
-        for btn in self._buttons.values():
-            btn._apply_chrome()
-        self.card.update()
 
     def _make_action(self, action: str, label: str) -> MorningButton:
         btn = MorningButton(label, self.inner)
@@ -587,6 +548,4 @@ class MorningReviewCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from .theme import board_bg
-
-        painter.fillRect(self.rect(), QColor(board_bg()))
+        painter.fillRect(self.rect(), QColor("#FAFAF7"))

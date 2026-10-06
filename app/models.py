@@ -58,8 +58,6 @@ class Task:
     after_count: int = 0  # сколько узлов сразу после этой карточки
     after_ids: list[str] = field(default_factory=list)
     prev_id: str = ""  # id узла, после которого стоит эта карточка
-    preset_name: str = ""
-    preset_step: int = -1
 
     def has_tag(self, key: str) -> bool:
         return key in self.tags

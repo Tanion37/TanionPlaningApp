@@ -94,8 +94,6 @@ def snapshot_dict(task: Task) -> dict[str, Any]:
         "after_count": int(getattr(task, "after_count", 0) or 0),
         "after_ids": list(getattr(task, "after_ids", None) or []),
         "prev_id": getattr(task, "prev_id", "") or "",
-        "preset_name": getattr(task, "preset_name", "") or "",
-        "preset_step": int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1),
         "text": format_task_snapshot(task),
     }
 
@@ -126,8 +124,6 @@ def task_from_state(snap: dict[str, Any]) -> Task:
         after_count=int(snap.get("after_count") or 0),
         after_ids=list(snap.get("after_ids") or []),
         prev_id=str(snap.get("prev_id") or ""),
-        preset_name=str(snap.get("preset_name") or ""),
-        preset_step=int(snap.get("preset_step") if snap.get("preset_step") is not None else -1),
     )
 
 
@@ -160,10 +156,6 @@ def apply_state_to_task(task: Task, snap: dict[str, Any]) -> None:
         task.after_count = int(snap.get("after_count") or 0)
     if "prev_id" in snap:
         task.prev_id = str(snap.get("prev_id") or "")
-    if "preset_name" in snap:
-        task.preset_name = str(snap.get("preset_name") or "")
-    if "preset_step" in snap and snap.get("preset_step") is not None:
-        task.preset_step = int(snap.get("preset_step"))
 
 
 @dataclass

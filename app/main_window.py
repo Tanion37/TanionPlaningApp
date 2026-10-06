@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -24,7 +23,6 @@ from PyQt6.QtWidgets import (
 )
 
 from .annotations import AnnotationStore, LabelAnn, RectAnn
-from .catalog_board import CatalogCanvas
 from .activity_log import (
     append_log,
     apply_state_to_task,
@@ -902,7 +900,6 @@ class BoardCanvas(QWidget):
         from .task_graph import linked_task_title
 
         block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
-        block.set_marked(task.id == self.main.selected_task_id)
         return block
 
     def _rebuild_annotations(self) -> None:
@@ -924,10 +921,8 @@ class BoardCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from .theme import board_bg, readable
-
-        painter.fillRect(self.rect(), QColor(board_bg()))
-        painter.setPen(QColor(readable("#666666")))
+        painter.fillRect(self.rect(), QColor("#FAFAF7"))
+        painter.setPen(QColor("#666666"))
         font = QFont("Segoe UI", 10)
         font.setBold(True)
         painter.setFont(font)
@@ -1084,9 +1079,6 @@ def _restart_supervised_bots() -> None:
 
 class MainWindow(QMainWindow):
     def __init__(self, store: TaskStore, annotations: AnnotationStore | None = None) -> None:
-        from .theme import load as load_theme
-
-        load_theme()
         super().__init__()
         self.store = store
         self.lists_store = ListsStore(store.path)
@@ -1174,10 +1166,6 @@ class MainWindow(QMainWindow):
             self.boards.append(board)
             self.stack.addWidget(board)
             self.screen_titles.append((screen_id, title))
-        self.catalog_board = CatalogCanvas(self)
-        self.catalog_board.swipe_callback = self._on_swipe
-        self.stack.addWidget(self.catalog_board)
-        self.screen_titles.append(("catalog", "Проекты и Preset"))
         layout.addWidget(self.stack, 1)
 
         self.controls = QWidget(self)
@@ -1186,12 +1174,8 @@ class MainWindow(QMainWindow):
         controls_layout.setSpacing(8)
         self.btn_new_global = CircleButton("+")
         self.btn_new_global.setToolTip("Новая задача")
-        self.btn_new_global.clicked.connect(self._on_new_global_clicked)
+        self.btn_new_global.clicked.connect(self.new_task)
         controls_layout.addWidget(self.btn_new_global)
-        self.btn_theme = CircleButton("◐")
-        self.btn_theme.setToolTip("Тема: светлая или тёмная")
-        self.btn_theme.clicked.connect(self.toggle_theme)
-        controls_layout.addWidget(self.btn_theme)
         self.btn_fullscreen = CircleButton("⛶")
         self.btn_fullscreen.setToolTip("Полный экран")
         self.btn_fullscreen.clicked.connect(self.toggle_fullscreen)
@@ -1359,7 +1343,6 @@ class MainWindow(QMainWindow):
         self._periodic_timer.timeout.connect(self._on_periodic_timer)
         self._periodic_timer.start()
         self._install_xlsx_live_reload()
-        self._apply_theme_chrome()
 
     def _executor_names(self) -> list[str]:
         if self.demo_mode:
@@ -1539,8 +1522,6 @@ class MainWindow(QMainWindow):
             return self.day_board
         if screen_id == "morning_review":
             return self.morning_board
-        if screen_id == "catalog":
-            return self.catalog_board
         for board in self.boards:
             if board.screen_id == screen_id:
                 return board
@@ -2047,22 +2028,18 @@ class MainWindow(QMainWindow):
                 else:
                     apply_control_tag(task)
             elif key == DONE_TAG:
-                was_done = task.is_done()
-                if was_done:
+                if task.is_done():
                     task.remove_tag(DONE_TAG)
                     task.completed_at = None
                 else:
                     apply_status_tag(task, DONE_TAG)
                     log_action = "completed"
                     log_detail = ""
-                if not was_done and task.is_done():
-                    self._advance_preset_chain(task)
             elif key == CANCEL_TAG:
                 if task.is_cancelled():
                     task.remove_tag(CANCEL_TAG)
                 else:
                     apply_status_tag(task, CANCEL_TAG)
-                    self._cancel_linked_subtree(task)
                     log_action = "cancelled"
                     log_detail = ""
             else:
@@ -2215,10 +2192,7 @@ class MainWindow(QMainWindow):
             return
         before_state = snapshot_dict(task)
         before_text = format_task_snapshot(task)
-        was_done = task.is_done()
         apply_morning_action(task, action)
-        if action == ACTION_DONE and not was_done and task.is_done():
-            self._advance_preset_chain(task)
         if self.demo_mode:
             self.reload_boards()
             return
@@ -2327,22 +2301,7 @@ class MainWindow(QMainWindow):
                 **kwargs,
             )
 
-    def _mark_selected_blocks(self) -> None:
-        selected = self.selected_task_id
-        board = self._board_for_screen(self._current_screen_id())
-        blocks = []
-        if board is not None:
-            mapped = getattr(board, "blocks", None)
-            if isinstance(mapped, dict):
-                blocks = list(mapped.values())
-            else:
-                blocks = list(getattr(board, "_blocks", []))
-        for block in blocks:
-            if hasattr(block, "set_marked"):
-                block.set_marked(getattr(block, "task", None) is not None and block.task.id == selected)
-
     def _apply_action(self, task: Task, action_key: str) -> None:
-        was_done = task.is_done()
         key = action_key
         if key == TODAY_ACTION:
             if not self.demo_mode:
@@ -2366,10 +2325,6 @@ class MainWindow(QMainWindow):
             apply_answers_tag(task)
         else:
             apply_status_tag(task, key)
-        if canonicalize_tag_key(key) == CANCEL_TAG and task.is_cancelled():
-            self._cancel_linked_subtree(task)
-        if not was_done and task.is_done():
-            self._advance_preset_chain(task)
 
     def _spawn_verify_task(self, source: Task) -> None:
         tags = [
@@ -2498,7 +2453,6 @@ class MainWindow(QMainWindow):
             return
         self.selected_task_id = task_id
         self.selected_ann_id = None
-        self._mark_selected_blocks()
 
     def on_annotation_selected(self, ann_id: str) -> None:
         self.selected_ann_id = ann_id or None
@@ -2747,123 +2701,6 @@ class MainWindow(QMainWindow):
         self._place_floating_controls()
         self._raise_floating()
 
-    def _on_new_global_clicked(self) -> None:
-        if self._is_lists_screen():
-            self.new_task()
-            return
-        from .theme import menu_qss
-
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_qss())
-        action_task = menu.addAction("Новая задача")
-        action_preset = menu.addAction("Новый Preset")
-        chosen = menu.exec(
-            self.btn_new_global.mapToGlobal(QPoint(0, self.btn_new_global.height()))
-        )
-        if chosen == action_task:
-            self.new_task()
-        elif chosen == action_preset:
-            self.open_preset_window()
-
-    def _apply_theme_chrome(self) -> None:
-        from .theme import apply_palette, readable
-
-        apply_palette(QApplication.instance())
-        self.title_label.setStyleSheet(
-            f"font-size: 18px; font-weight: 600; padding: 8px; color:{readable('#222222')};"
-        )
-        self.screen_label.setStyleSheet(f"color:{readable('#333333')};")
-        self.filter_label.setStyleSheet(f"color:{readable('#886600')}; padding: 4px;")
-        self.controls.update()
-        self.update()
-
-    def toggle_theme(self) -> None:
-        from .theme import board_style, toggle
-
-        toggle()
-        style = board_style()
-        self.setStyleSheet(style)
-        self._apply_theme_chrome()
-        for index in range(self.stack.count()):
-            widget = self.stack.widget(index)
-            if hasattr(widget, "apply_theme"):
-                widget.apply_theme()
-            else:
-                widget.setStyleSheet(style)
-        self.reload_boards()
-
-    def open_preset_window(self, preset_name: str | None = None) -> None:
-        from .preset_store import spawn_roots_inbox
-        from .preset_window import PresetWindow
-
-        if self.demo_mode:
-            QMessageBox.information(self, "ДЕМО", "В демо-режиме Preset отключён.")
-            return
-        dialog = PresetWindow(self, preset_name)
-        if dialog.exec() != dialog.DialogCode.Accepted or not dialog.saved_name:
-            return
-        created = spawn_roots_inbox(self.store, dialog.saved_name)
-        for task in created:
-            append_log("created", task, detail="корень Preset", source="app")
-            self._note_task_change(task, action="upsert")
-        self.request_save()
-        self.reload_boards()
-        self._sync_history_buttons()
-
-    def _cancel_linked_subtree(self, task: Task) -> None:
-        from .task_graph import subtree_tasks
-
-        pool = self.demo_tasks if self.demo_mode else self.store.tasks
-        for other in subtree_tasks(pool, task.id, include_self=False):
-            if not other.is_cancelled():
-                apply_status_tag(other, CANCEL_TAG)
-
-    def _delete_task_subtree(self, task_id: str) -> None:
-        from .task_graph import subtree_tasks
-
-        if self.demo_mode:
-            return
-        victims = subtree_tasks(self.store.tasks, task_id, include_self=True)
-        if not victims:
-            return
-        drop = {item.id for item in victims}
-        for item in victims:
-            before = format_task_snapshot(item)
-            before_state = snapshot_dict(item)
-            self.store.remove_task(item.id, persist=False)
-            append_log(
-                "changed",
-                task_id=item.id,
-                before=before,
-                after="(удалено)",
-                detail="удаление ветки",
-                source="app",
-                before_state=before_state,
-                after_state=None,
-            )
-        for item in self.store.tasks:
-            item.after_ids = [link for link in item.after_ids if link not in drop]
-            if item.prev_id in drop:
-                item.prev_id = ""
-            item.after_count = len(item.after_ids)
-        if self.selected_task_id in drop:
-            self.selected_task_id = None
-        self.request_save()
-        self.reload_boards()
-        self._sync_history_buttons()
-
-    def _advance_preset_chain(self, task: Task) -> None:
-        from .preset_store import spawn_linked_inbox
-
-        if self.demo_mode:
-            return
-        created = spawn_linked_inbox(self.store, task)
-        if not created:
-            return
-        for item in created:
-            append_log("created", item, detail="следующий шаг Preset", source="app")
-        self.request_save()
-
     def new_task(self) -> None:
         if self._is_lists_screen():
             self.lists_board.add_new_list()
@@ -2900,9 +2737,6 @@ class MainWindow(QMainWindow):
         if x is not None and y is not None:
             data["pos_x"] = x
             data["pos_y"] = y
-        chain_preset = str(data.pop("chain_preset", "") or "")
-        chain_step = data.pop("chain_step", -1)
-        chain_role = str(data.pop("chain_role", "") or "")
         preset = data.pop("create_preset", None) or dlg.create_preset()
         tags = [canonicalize_tag_key(t) for t in data.get("tags") or []]
         tags = [t for t in tags if t]
@@ -2923,20 +2757,6 @@ class MainWindow(QMainWindow):
                 payload.pop("pos_x", None)
                 payload.pop("pos_y", None)
             task = self.store.add_task(persist=False, **payload)
-            if i == 0 and chain_preset and int(chain_step if chain_step is not None else -1) >= 0:
-                from .tags import CANCEL_TAG as _CANCEL
-                from .tags import DONE_TAG as _DONE
-                from .tags import INBOX_TAG as _INBOX
-
-                task.preset_name = chain_preset
-                task.preset_step = int(chain_step)
-                if chain_role:
-                    task.role = chain_role
-                task.remove_tag(_DONE)
-                task.remove_tag(_CANCEL)
-                task.completed_at = None
-                if not task.has_tag(_INBOX):
-                    task.tags.insert(0, _INBOX)
             if task.is_done() and task.completed_at is None:
                 task.completed_at = date.today()
             append_log("created", task, source="app", before_state=None)
@@ -3023,7 +2843,6 @@ class MainWindow(QMainWindow):
                 task.tags.append(CANCEL_TAG)
         self.request_save()
         if task.is_done() and not was_done:
-            self._advance_preset_chain(task)
             append_log(
                 "completed",
                 task,
@@ -3032,7 +2851,6 @@ class MainWindow(QMainWindow):
                 before_state=before_state,
             )
         elif task.is_cancelled() and not was_cancelled:
-            self._cancel_linked_subtree(task)
             append_log(
                 "cancelled",
                 task,
@@ -3058,15 +2876,6 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            from PyQt6.QtWidgets import QAbstractSpinBox, QComboBox, QPlainTextEdit
-
-            focus = QApplication.focusWidget()
-            if isinstance(focus, (QLineEdit, QPlainTextEdit, QComboBox, QAbstractSpinBox)):
-                super().keyPressEvent(event)
-                return
-            if self.selected_task_id and not self.demo_mode:
-                self._delete_task_subtree(self.selected_task_id)
-                return
             if self.selected_ann_id and not self.demo_mode:
                 if self.annotations.remove(self.selected_ann_id):
                     self.selected_ann_id = None

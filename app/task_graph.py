@@ -85,26 +85,6 @@ def linked_task_title(tasks: list[Task], task: Task) -> str:
     return (parent.title or "").strip()
 
 
-def subtree_tasks(tasks: list[Task], task_id: str, *, include_self: bool = True) -> list[Task]:
-    """Узел и все задачи, которые идут от него по связям after_ids."""
-    by_id = {task.id: task for task in tasks}
-    root = by_id.get(task_id)
-    if root is None:
-        return []
-    found: list[Task] = []
-    seen: set[str] = set()
-    stack = [task_id] if include_self else list(root.after_ids)
-    while stack:
-        current = stack.pop()
-        if current in seen or current not in by_id:
-            continue
-        seen.add(current)
-        node = by_id[current]
-        found.append(node)
-        stack.extend(node.after_ids)
-    return found
-
-
 def add_linked_task(tasks: list[Task], parent: Task, title: str) -> Task | None:
     """Новый узел сразу после parent. Имя пустое — ничего не создавать."""
     from .widgets import TASK_BLOCK_H, TASK_W

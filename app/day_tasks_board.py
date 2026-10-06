@@ -33,7 +33,6 @@ from .day_tasks import (
     section_heading,
 )
 from .layout_metrics import content_side_margins
-from .theme import readable
 from .models import Task
 from .tags import display_symbol
 from .widgets import TASK_BLOCK_H, TASK_W, TagBar, TagCircle, TaskBlock
@@ -345,7 +344,7 @@ class DayTasksCanvas(QWidget):
                     "color:#1a5fb4; font-weight:700; background:#DCEBFF; padding:1px 4px;"
                 )
             else:
-                lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+                lab.setStyleSheet("color:#444; font-weight:600;")
 
     def executor_at_global(self, global_pos: QPoint) -> str | None:
         for name, w in self._executor_widgets.items():
@@ -388,7 +387,6 @@ class DayTasksCanvas(QWidget):
         from .task_graph import linked_task_title
 
         block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
-        block.set_marked(task.id == self.main.selected_task_id)
         self._blocks.append(block)
         return block
 
@@ -508,7 +506,7 @@ class DayTasksCanvas(QWidget):
                 head = QHBoxLayout()
                 if tag in exec_names:
                     lab = QLabel(tag)
-                    lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+                    lab.setStyleSheet("color:#444; font-weight:600;")
                     lab.setCursor(Qt.CursorShape.PointingHandCursor)
                     lab.setToolTip(
                         f"Кисть «{tag}»: клик по задаче или drop сюда ставит исполнителя, "
@@ -523,7 +521,7 @@ class DayTasksCanvas(QWidget):
                     self._section_ids[("executor", tag)] = [t.id for t in tag_tasks]
                 elif tag == UNTAGGED_SECTION:
                     lab = QLabel(section_heading(tag))
-                    lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+                    lab.setStyleSheet("color:#444; font-weight:600;")
                     lab.setCursor(Qt.CursorShape.PointingHandCursor)
                     lab.mousePressEvent = (  # type: ignore[method-assign]
                         lambda event, name=tag: self._on_heading_press(event, "tag", name)
@@ -543,7 +541,7 @@ class DayTasksCanvas(QWidget):
                         circle.set_highlighted(tag == paint_key)
                     head.addWidget(circle)
                     lab = QLabel(section_heading(tag))
-                    lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+                    lab.setStyleSheet("color:#444; font-weight:600;")
                     lab.setCursor(Qt.CursorShape.PointingHandCursor)
                     lab.mousePressEvent = (  # type: ignore[method-assign]
                         lambda event, name=tag: self._on_heading_press(event, "tag", name)
@@ -663,9 +661,7 @@ class DayTasksCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from .theme import board_bg
-
-        painter.fillRect(self.rect(), QColor(board_bg()))
+        painter.fillRect(self.rect(), QColor("#FAFAF7"))
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

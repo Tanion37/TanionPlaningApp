@@ -23,7 +23,6 @@ from .activity_log import (
     now_local,
 )
 from .layout_metrics import content_side_margins
-from .theme import readable
 
 COL_W = 280
 COL_GAP = 16
@@ -60,7 +59,7 @@ class DayLogColumn(QWidget):
         font = QFont("Segoe UI", 11)
         font.setBold(True)
         title.setFont(font)
-        title.setStyleSheet(f"color:{readable('#333333')};")
+        title.setStyleSheet("color:#333;")
         title.setWordWrap(True)
         layout.addWidget(title)
 
@@ -68,11 +67,11 @@ class DayLogColumn(QWidget):
 
         def add_section(caption: str, items: list[LogEntry], kind: str) -> None:
             head = QLabel(caption)
-            head.setStyleSheet(f"color:{readable('#666666')}; font-weight:600; margin-top:8px;")
+            head.setStyleSheet("color:#666; font-weight:600; margin-top:8px;")
             layout.addWidget(head)
             if not items:
                 empty = QLabel("—")
-                empty.setStyleSheet(f"color:{readable('#AAAAAA')};")
+                empty.setStyleSheet("color:#aaa;")
                 layout.addWidget(empty)
                 return
             for e in items:
@@ -86,11 +85,11 @@ class DayLogColumn(QWidget):
                 lab.setWordWrap(True)
                 lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 if kind == "completed":
-                    lab.setStyleSheet(f"color:{readable('#2E7D32')}; font-size:11px;")
+                    lab.setStyleSheet("color:#2E7D32; font-size:11px;")
                 elif kind == "changed":
-                    lab.setStyleSheet(f"color:{readable('#1565C0')}; font-size:11px;")
+                    lab.setStyleSheet("color:#1565C0; font-size:11px;")
                 else:
-                    lab.setStyleSheet(f"color:{readable('#222222')}; font-size:11px;")
+                    lab.setStyleSheet("color:#222; font-size:11px;")
                 layout.addWidget(lab)
 
         add_section("Выполненные", completed, "completed")
@@ -165,10 +164,8 @@ class LogsCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from .theme import board_bg, readable
-
-        painter.fillRect(self.rect(), QColor(board_bg()))
-        painter.setPen(QColor(readable("#666666")))
+        painter.fillRect(self.rect(), QColor("#FAFAF7"))
+        painter.setPen(QColor("#666666"))
         font = QFont("Segoe UI", 10)
         font.setBold(True)
         painter.setFont(font)
