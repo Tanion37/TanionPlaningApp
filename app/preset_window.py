@@ -160,7 +160,7 @@ class PresetWindow(QDialog):
                 widget.deleteLater()
         self._blocks = []
         for task in self.tasks:
-            block = TaskBlock(task)
+            block = TaskBlock(task, show_role=True)
             block.set_linked_title(linked_task_title(self.tasks, task))
             block.set_marked(task.id == self.selected_id)
             block.clicked.connect(self._select)

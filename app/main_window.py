@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -750,7 +749,7 @@ class BoardCanvas(QWidget):
                     by = int(task.pos_y)
                 else:
                     bx, by = stack_x, stack_y
-                    stack_y += TASK_BLOCK_H + 8
+                    stack_y += block.height() + 8
                     if stack_y + TASK_BLOCK_H > top + usable_h:
                         stack_y = top
                         stack_x += TASK_W + 8
@@ -820,7 +819,7 @@ class BoardCanvas(QWidget):
                     else:
                         bx = min(x, max_task_x)
                         by = y
-                        y += TASK_BLOCK_H + 8
+                        y += block.height() + 8
                         if y + TASK_BLOCK_H > top + usable_h:
                             y = top
                             x += TASK_W + col_gap
@@ -1186,8 +1185,12 @@ class MainWindow(QMainWindow):
         controls_layout.setSpacing(8)
         self.btn_new_global = CircleButton("+")
         self.btn_new_global.setToolTip("Новая задача")
-        self.btn_new_global.clicked.connect(self._on_new_global_clicked)
+        self.btn_new_global.clicked.connect(self.new_task)
         controls_layout.addWidget(self.btn_new_global)
+        self.btn_new_preset = CircleButton("", glyph="fork")
+        self.btn_new_preset.setToolTip("Новый Preset")
+        self.btn_new_preset.clicked.connect(self.open_preset_window)
+        controls_layout.addWidget(self.btn_new_preset)
         self.btn_theme = CircleButton("◐")
         self.btn_theme.setToolTip("Тема: светлая или тёмная")
         self.btn_theme.clicked.connect(self.toggle_theme)
@@ -2747,24 +2750,6 @@ class MainWindow(QMainWindow):
         self._place_floating_controls()
         self._raise_floating()
 
-    def _on_new_global_clicked(self) -> None:
-        if self._is_lists_screen():
-            self.new_task()
-            return
-        from .theme import menu_qss
-
-        menu = QMenu(self)
-        menu.setStyleSheet(menu_qss())
-        action_task = menu.addAction("Новая задача")
-        action_preset = menu.addAction("Новый Preset")
-        chosen = menu.exec(
-            self.btn_new_global.mapToGlobal(QPoint(0, self.btn_new_global.height()))
-        )
-        if chosen == action_task:
-            self.new_task()
-        elif chosen == action_preset:
-            self.open_preset_window()
-
     def _apply_theme_chrome(self) -> None:
         from .theme import apply_palette, readable
 
@@ -2930,7 +2915,7 @@ class MainWindow(QMainWindow):
 
                 task.preset_name = chain_preset
                 task.preset_step = int(chain_step)
-                if chain_role:
+                if chain_role and not task.role:
                     task.role = chain_role
                 task.remove_tag(_DONE)
                 task.remove_tag(_CANCEL)
@@ -2979,6 +2964,9 @@ class MainWindow(QMainWindow):
         was_cancelled = task.is_cancelled()
         old_start = task.start_at
         task.title = data["title"]
+        from .roles import coerce_role
+
+        task.role = coerce_role(data.get("role"))
         from .projects import resolve_project_name
         from .tags import CONTROL_TAG, apply_control_tag, clear_inbox_tag
 

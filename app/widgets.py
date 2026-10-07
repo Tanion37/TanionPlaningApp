@@ -33,8 +33,8 @@ from .roles import coerce_role, role_labels
 from .tags import REMIND_PERIODS, tags_to_cell
 TASK_W = 200
 TASK_H = 50
-# Нижняя полоса: роль, «+», связанная задача.
-TASK_BLOCK_H = TASK_H + 76
+# Нижняя полоса: «+» и, если есть связи, поле «Связанная задача».
+TASK_BLOCK_H = TASK_H + 28
 CIRCLE = 50
 # Компактные значки тегов в диалогах создания/правки
 TAG_ICON = 32
@@ -57,9 +57,12 @@ class TaskBlock(QWidget):
         self,
         task: Task,
         parent: QWidget | None = None,
+        *,
+        show_role: bool = False,
     ) -> None:
         super().__init__(parent)
         self.task = task
+        self.show_role = show_role
         self._marked = False
         self.setFixedSize(TASK_W, TASK_BLOCK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
@@ -79,15 +82,16 @@ class TaskBlock(QWidget):
         self.update()
 
     def _build_chrome(self) -> None:
-        self._role = QComboBox(self)
-        self._role.setGeometry(4, TASK_H + 2, TASK_W - 8, 22)
-        self._role.setFont(QFont("Segoe UI", 8))
-        self._role.setToolTip("Роль")
-        self._role.addItem("роль", "")
-        for label in role_labels():
-            self._role.addItem(label, label)
-        self._role.currentIndexChanged.connect(self._on_role)
-        self._role.installEventFilter(self)
+        self._role: QComboBox | None = None
+        if self.show_role:
+            self._role = QComboBox(self)
+            self._role.setFont(QFont("Segoe UI", 8))
+            self._role.setToolTip("Роль")
+            self._role.addItem("роль", "")
+            for label in role_labels():
+                self._role.addItem(label, label)
+            self._role.currentIndexChanged.connect(self._on_role)
+            self._role.installEventFilter(self)
 
         self._plus_btn = QPushButton("+", self)
         self._plus_btn.setFont(QFont("Segoe UI", 8))
@@ -103,8 +107,9 @@ class TaskBlock(QWidget):
 
     def _layout_chrome(self) -> None:
         y = TASK_H + 2
-        self._role.setGeometry(4, y, TASK_W - 8, 22)
-        y += 24
+        if self._role is not None:
+            self._role.setGeometry(4, y, TASK_W - 8, 22)
+            y += 24
         self._plus_btn.setGeometry(4, y, 22, 22)
         y += 24
         for row in self._rows:
@@ -113,17 +118,23 @@ class TaskBlock(QWidget):
             row["add"].setGeometry(4, y, 94, 22)
             row["del"].setGeometry(102, y, 94, 22)
             y += 26
-        self._linked.setGeometry(4, y, TASK_W - 8, 22)
-        y += 26
-        self.setFixedSize(TASK_W, y)
+        if self._linked_title:
+            self._linked.show()
+            self._linked.setText(self._linked_title)
+            self._linked.setGeometry(4, y, TASK_W - 8, 22)
+            y += 26
+        else:
+            self._linked.hide()
+        self.setFixedSize(TASK_W, max(TASK_H, y))
 
     def _sync_chrome(self) -> None:
-        role = coerce_role(self.task.role)
-        self._role.blockSignals(True)
-        index = self._role.findData(role)
-        self._role.setCurrentIndex(index if index >= 0 else 0)
-        self._role.blockSignals(False)
-        self._linked.setText(self._linked_title)
+        if self._role is not None:
+            role = coerce_role(self.task.role)
+            self._role.blockSignals(True)
+            index = self._role.findData(role)
+            self._role.setCurrentIndex(index if index >= 0 else 0)
+            self._role.blockSignals(False)
+        self._layout_chrome()
 
     def set_marked(self, on: bool) -> None:
         self._marked = bool(on)
@@ -132,9 +143,11 @@ class TaskBlock(QWidget):
     def set_linked_title(self, title: str) -> None:
         self._linked_title = (title or "").strip()
         if hasattr(self, "_linked"):
-            self._linked.setText(self._linked_title)
+            self._layout_chrome()
 
     def _on_role(self, _index: int) -> None:
+        if self._role is None:
+            return
         role = coerce_role(self._role.currentData())
         if role == coerce_role(self.task.role):
             return
@@ -195,7 +208,7 @@ class TaskBlock(QWidget):
         self.add_linked.emit(self.task.id, title, others)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if watched is self._role and event.type() == QEvent.Type.Wheel:
+        if self._role is not None and watched is self._role and event.type() == QEvent.Type.Wheel:
             event.ignore()
             return True
         return super().eventFilter(watched, event)
@@ -623,9 +636,10 @@ class TagBar(QWidget):
 class CircleButton(QWidget):
     clicked = pyqtSignal()
 
-    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+    def __init__(self, label: str, parent: QWidget | None = None, *, glyph: str = "") -> None:
         super().__init__(parent)
         self.label = label
+        self.glyph = glyph
         self._active = False
         self.setFixedSize(CIRCLE, CIRCLE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -667,9 +681,25 @@ class CircleButton(QWidget):
         painter.setBrush(brush)
         painter.drawEllipse(1, 1, CIRCLE - 2, CIRCLE - 2)
         painter.setPen(text)
+        if self.glyph == "fork":
+            self._paint_fork(painter, text)
+            return
         font = QFont("Segoe UI", 16)
         painter.setFont(font)
         painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self.label)
+
+    def _paint_fork(self, painter: QPainter, color: QColor) -> None:
+        """Один блок расходится на два."""
+        painter.setPen(QPen(color, 1.6))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        source = QRect(9, 19, 13, 12)
+        upper = QRect(29, 8, 13, 12)
+        lower = QRect(29, 30, 13, 12)
+        painter.drawLine(source.right(), source.center().y(), upper.left(), upper.center().y())
+        painter.drawLine(source.right(), source.center().y(), lower.left(), lower.center().y())
+        painter.drawRoundedRect(source, 2, 2)
+        painter.drawRoundedRect(upper, 2, 2)
+        painter.drawRoundedRect(lower, 2, 2)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if (
@@ -1154,6 +1184,16 @@ class _DueCreatedHighlight:
         return True
 
 
+def _role_combo(current: str = "") -> QComboBox:
+    box = QComboBox()
+    box.addItem("", "")
+    for label in role_labels():
+        box.addItem(label, label)
+    index = box.findData(coerce_role(current))
+    box.setCurrentIndex(index if index >= 0 else 0)
+    return box
+
+
 class NewTaskDialog(_EnterAcceptDialog):
     def __init__(
         self,
@@ -1219,6 +1259,9 @@ class NewTaskDialog(_EnterAcceptDialog):
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("несколько названий — через ;")
         form.addRow("Название *", self.title_edit)
+
+        self.role_combo = _role_combo()
+        form.addRow("Роль", self.role_combo)
 
         self.project_edit = QLineEdit()
         self.project_edit.setPlaceholderText("необязательно")
@@ -1332,6 +1375,9 @@ class NewTaskDialog(_EnterAcceptDialog):
         self._sync_project_combo(project)
         self.description_edit.setPlainText(step.get("description") or "")
         self.tag_picker.set_keys(list(step.get("tags") or []))
+        role = str(step.get("role") or "")
+        index = self.role_combo.findData(coerce_role(role))
+        self.role_combo.setCurrentIndex(index if index >= 0 else 0)
         self._chain_preset = name
         self._chain_step = index
         self._chain_role = str(step.get("role") or "")
@@ -1365,6 +1411,7 @@ class NewTaskDialog(_EnterAcceptDialog):
 
         return {
             "title": title,
+            "role": coerce_role(self.role_combo.currentData()),
             "project": self.project_edit.text().strip(),
             "description": self.description_edit.toPlainText().strip(),
             "created_at": _opt_date(self.created),
@@ -1425,6 +1472,9 @@ class EditTaskDialog(_EnterAcceptDialog):
         form = QFormLayout()
         self.title_edit = QLineEdit(task.title)
         form.addRow("Название *", self.title_edit)
+
+        self.role_combo = _role_combo(task.role)
+        form.addRow("Роль", self.role_combo)
 
         self.project_edit = QLineEdit(task.project)
         self.project_edit.setPlaceholderText("необязательно")
@@ -1519,6 +1569,7 @@ class EditTaskDialog(_EnterAcceptDialog):
             return None
         return {
             "title": title,
+            "role": coerce_role(self.role_combo.currentData()),
             "project": self.project_edit.text().strip(),
             "description": self.description_edit.toPlainText(),
             "author": self.author.text().strip(),
