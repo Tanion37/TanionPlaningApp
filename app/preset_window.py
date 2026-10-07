@@ -74,6 +74,7 @@ class PresetWindow(QDialog):
     def _create_task(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Создать задачу")
+        dialog.setFixedWidth(280)
         box = QVBoxLayout(dialog)
         form = QFormLayout()
         title_edit = QLineEdit()
@@ -89,9 +90,12 @@ class PresetWindow(QDialog):
         form.addRow("Название", title_edit)
         form.addRow("Связать с", parent_list)
         box.addLayout(form)
-        box.addWidget(
-            QLabel("Ничего не отмечено — корневая задача. Несколько отметок — одна задача после всех них.")
+        hint = QLabel(
+            "Ничего не отмечено — корневая задача.\n"
+            "Несколько отметок — одна задача после всех них."
         )
+        hint.setWordWrap(True)
+        box.addWidget(hint)
         row = QHBoxLayout()
         ok_btn = QPushButton("ОК")
         cancel_btn = QPushButton("Отмена")
