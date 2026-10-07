@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -74,12 +75,16 @@ class PresetWindow(QDialog):
     def _create_task(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Создать задачу")
-        dialog.setFixedWidth(280)
+        dialog.resize(280, 360)
+        dialog.setMinimumSize(220, 260)
+        dialog.setSizeGripEnabled(True)
         box = QVBoxLayout(dialog)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         title_edit = QLineEdit()
         parent_list = QListWidget()
         parent_list.setMinimumHeight(140)
+        parent_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         for task in self.tasks:
             label = (task.title or task.id).strip()
             item = QListWidgetItem(label)
@@ -89,7 +94,7 @@ class PresetWindow(QDialog):
             parent_list.addItem(item)
         form.addRow("Название", title_edit)
         form.addRow("Связать с", parent_list)
-        box.addLayout(form)
+        box.addLayout(form, 1)
         hint = QLabel(
             "Ничего не отмечено — корневая задача.\n"
             "Несколько отметок — одна задача после всех них."
