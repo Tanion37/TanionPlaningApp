@@ -2447,7 +2447,7 @@ class MainWindow(QMainWindow):
         return None
 
     def on_task_add_linked(self, task_id: str, title: str, drafts: object = ()) -> None:
-        from .task_graph import add_linked_task
+        from .task_graph import attach_named_child
 
         parent = self._find_task(task_id)
         name = (title or "").strip()
@@ -2455,35 +2455,38 @@ class MainWindow(QMainWindow):
             return
         pending = [str(item) for item in (drafts or [])]
         tasks = self.demo_tasks if self.demo_mode else self.store.tasks
+        before_links = list(parent.after_ids)
+        before = format_task_snapshot(parent)
+        before_state = snapshot_dict(parent)
+        child, created = attach_named_child(tasks, parent, name)
+        if child is None:
+            return
         if self.demo_mode:
-            add_linked_task(tasks, parent, name)
             self.reload_boards()
             self._restore_link_drafts(task_id, pending)
             return
-        before = format_task_snapshot(parent)
-        before_state = snapshot_dict(parent)
-        child = add_linked_task(tasks, parent, name)
-        if child is None:
-            return
         batch = uuid.uuid4().hex
-        append_log(
-            "created",
-            child,
-            detail="связанная задача",
-            source="app",
-            batch=batch,
-        )
-        append_log(
-            "changed",
-            parent,
-            before=before,
-            detail="связанная задача",
-            source="app",
-            before_state=before_state,
-            batch=batch,
-        )
-        self.request_save()
-        self._last_paint_key = None
+        if created:
+            append_log(
+                "created",
+                child,
+                detail="связанная задача",
+                source="app",
+                batch=batch,
+            )
+        if list(parent.after_ids) != before_links:
+            append_log(
+                "changed",
+                parent,
+                before=before,
+                detail="связанная задача",
+                source="app",
+                before_state=before_state,
+                batch=batch,
+            )
+        if created or list(parent.after_ids) != before_links:
+            self.request_save()
+            self._last_paint_key = None
         self.reload_boards()
         self._restore_link_drafts(task_id, pending)
         self._sync_history_buttons()

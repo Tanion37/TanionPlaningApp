@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -26,7 +28,7 @@ from .preset_store import (
     save_preset,
     tasks_from_steps,
 )
-from .task_graph import add_linked_task, linked_task_title
+from .task_graph import add_linked_task, attach_named_child, link_existing_task, linked_task_title
 from .widgets import TASK_W, TaskBlock
 
 
@@ -75,14 +77,21 @@ class PresetWindow(QDialog):
         box = QVBoxLayout(dialog)
         form = QFormLayout()
         title_edit = QLineEdit()
-        parent_box = QComboBox()
-        parent_box.addItem("Корневая задача", "")
+        parent_list = QListWidget()
+        parent_list.setMinimumHeight(140)
         for task in self.tasks:
             label = (task.title or task.id).strip()
-            parent_box.addItem(label, task.id)
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, task.id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            parent_list.addItem(item)
         form.addRow("Название", title_edit)
-        form.addRow("Связать с", parent_box)
+        form.addRow("Связать с", parent_list)
         box.addLayout(form)
+        box.addWidget(
+            QLabel("Ничего не отмечено — корневая задача. Несколько отметок — одна задача после всех них.")
+        )
         row = QHBoxLayout()
         ok_btn = QPushButton("ОК")
         cancel_btn = QPushButton("Отмена")
@@ -96,23 +105,32 @@ class PresetWindow(QDialog):
         title = title_edit.text().strip()
         if not title:
             return
-        parent_id = str(parent_box.currentData() or "")
-        if parent_id:
+        parents: list[Task] = []
+        for index in range(parent_list.count()):
+            item = parent_list.item(index)
+            if item.checkState() != Qt.CheckState.Checked:
+                continue
+            parent_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
             parent = next((task for task in self.tasks if task.id == parent_id), None)
-            if parent is None:
-                return
-            created = add_linked_task(self.tasks, parent, title)
-            if created is None:
-                return
-            self.selected_id = created.id
-        else:
+            if parent is not None:
+                parents.append(parent)
+        matches = [task for task in self.tasks if (task.title or "").strip() == title]
+        child = matches[0] if len(matches) == 1 else None
+        if child is None and not parents:
             used = {task.id for task in self.tasks}
             number = 1
             while f"{number:03d}" in used:
                 number += 1
-            created = Task(id=f"{number:03d}", title=title)
-            self.tasks.append(created)
-            self.selected_id = created.id
+            child = Task(id=f"{number:03d}", title=title)
+            self.tasks.append(child)
+        elif child is None:
+            child = add_linked_task(self.tasks, parents[0], title)
+            parents = parents[1:]
+        if child is None:
+            return
+        for parent in parents:
+            link_existing_task(self.tasks, parent, child)
+        self.selected_id = child.id
         self._rebuild()
 
     def _delete_selected(self) -> None:
@@ -126,7 +144,9 @@ class PresetWindow(QDialog):
         parent = next((task for task in self.tasks if task.id == task_id), None)
         if parent is None:
             return
-        add_linked_task(self.tasks, parent, title)
+        child, _created = attach_named_child(self.tasks, parent, title)
+        if child is None:
+            return
         self._rebuild()
         block = self._block_for(task_id)
         if block is not None:

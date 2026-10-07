@@ -286,8 +286,51 @@ def _child_indexes(steps: list[dict], step: int) -> list[int]:
     return [nxt] if nxt < len(steps) else []
 
 
+def _parent_indexes(steps: list[dict], index: int) -> list[int]:
+    """Шаги, после которых стоит этот. Без графа — предыдущий шаг линейной цепочки."""
+    if not any("after" in step for step in steps):
+        return [index - 1] if index > 0 else []
+    node_id = str(steps[index].get("id") or "")
+    if not node_id:
+        return []
+    parents: list[int] = []
+    for parent_index, step in enumerate(steps):
+        links = [str(link) for link in (step.get("after") or [])]
+        if node_id in links and parent_index not in parents:
+            parents.append(parent_index)
+    return parents
+
+
+def _same_run(store, task: Task) -> list[Task]:
+    """Живые задачи одного запуска пресета: общий предок или связь prev/after."""
+    name = (getattr(task, "preset_name", "") or "").strip()
+    pool = [item for item in store.tasks if (item.preset_name or "") == name]
+    by_id = {item.id: item for item in pool}
+    seen: set[str] = set()
+    current: Task | None = task if task.id in by_id else None
+    guard = 0
+    while current is not None and current.id not in seen and guard < 100:
+        seen.add(current.id)
+        current = by_id.get((current.prev_id or "").strip())
+        guard += 1
+    changed = True
+    while changed:
+        changed = False
+        for item in pool:
+            if item.id in seen:
+                for link in item.after_ids:
+                    if link in by_id and link not in seen:
+                        seen.add(link)
+                        changed = True
+                continue
+            if (item.prev_id or "") in seen:
+                seen.add(item.id)
+                changed = True
+    return [by_id[item_id] for item_id in seen if item_id in by_id]
+
+
 def spawn_linked_inbox(store, task: Task) -> list:
-    """После выполнения узла создать все задачи, связанные с ним напрямую, во входящих."""
+    """Следующие задачи во входящих. Общий потомок ждёт, пока выполнены все предки."""
     name = (getattr(task, "preset_name", "") or "").strip()
     step = step_index(getattr(task, "preset_step", -1))
     if not name or step < 0:
@@ -295,14 +338,26 @@ def spawn_linked_inbox(store, task: Task) -> list:
     steps = load_steps(name)
     if step >= len(steps):
         return []
+    run = _same_run(store, task)
+    live_steps: dict[int, list[Task]] = {}
+    for item in run:
+        live_steps.setdefault(step_index(item.preset_step), []).append(item)
     created = []
     for index in _child_indexes(steps, step):
-        if any(
-            (other.prev_id or "") == task.id
-            and (other.preset_name or "") == name
-            and step_index(other.preset_step) == index
-            for other in store.tasks
-        ):
+        if any(step_index(item.preset_step) == index for item in run):
+            continue
+        parents = _parent_indexes(steps, index)
+        if not parents:
+            continue
+        ready = True
+        parent_live: list[Task] = []
+        for parent_index in parents:
+            lives = live_steps.get(parent_index) or []
+            if not lives or not all(item.is_done() for item in lives):
+                ready = False
+                break
+            parent_live.extend(lives)
+        if not ready:
             continue
         data = steps[index]
         child = store.add_task(
@@ -317,10 +372,12 @@ def spawn_linked_inbox(store, task: Task) -> list:
             prev_id=task.id,
             source="preset",
         )
-        if child.id not in task.after_ids:
-            task.after_ids.append(child.id)
-            task.after_count = len(task.after_ids)
+        for parent in parent_live:
+            if child.id not in parent.after_ids:
+                parent.after_ids.append(child.id)
+                parent.after_count = len(parent.after_ids)
         created.append(child)
+        run.append(child)
     return created
 
 

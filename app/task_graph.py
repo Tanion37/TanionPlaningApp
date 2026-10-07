@@ -105,6 +105,61 @@ def subtree_tasks(tasks: list[Task], task_id: str, *, include_self: bool = True)
     return found
 
 
+def _reaches(tasks: list[Task], start_id: str, target_id: str) -> bool:
+    """Есть ли путь по after_ids от start_id к target_id, не считая сам старт."""
+    by_id = {task.id: task for task in tasks}
+    if start_id not in by_id:
+        return False
+    seen = {start_id}
+    stack = list(by_id[start_id].after_ids)
+    while stack:
+        current = stack.pop()
+        if current in seen or current not in by_id:
+            continue
+        if current == target_id:
+            return True
+        seen.add(current)
+        stack.extend(by_id[current].after_ids)
+    return False
+
+
+def link_existing_task(tasks: list[Task], parent: Task, child: Task) -> bool:
+    """Поставить уже существующую задачу сразу после parent. Круг не создавать."""
+    if parent is None or child is None or parent.id == child.id:
+        return False
+    if child.id in parent.after_ids:
+        return True
+    if _reaches(tasks, child.id, parent.id):
+        return False
+    parent.after_ids.append(child.id)
+    parent.after_count = len(parent.after_ids)
+    if not (child.prev_id or "").strip():
+        child.prev_id = parent.id
+    return True
+
+
+def attach_named_child(tasks: list[Task], parent: Task, title: str) -> tuple[Task | None, bool]:
+    """Связать parent с задачей этого имени. Если такая одна — присоединить её, иначе создать.
+
+    Возвращает (задача, создана ли новая). None — имя пустое или связь замкнула бы круг.
+    """
+    name = (title or "").strip()
+    if parent is None or not name:
+        return None, False
+    matches = [
+        task
+        for task in tasks
+        if task.id != parent.id and (task.title or "").strip() == name
+    ]
+    if len(matches) == 1:
+        child = matches[0]
+        if not link_existing_task(tasks, parent, child):
+            return None, False
+        return child, False
+    child = add_linked_task(tasks, parent, name)
+    return child, child is not None
+
+
 def add_linked_task(tasks: list[Task], parent: Task, title: str) -> Task | None:
     """Новый узел сразу после parent. Имя пустое — ничего не создавать."""
     from .widgets import TASK_BLOCK_H, TASK_W
