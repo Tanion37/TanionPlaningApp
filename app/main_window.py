@@ -1154,6 +1154,9 @@ class MainWindow(QMainWindow):
         self.lists_board = ListsCanvas(self.lists_store, self, self.executors_store)
         self.lists_board.swipe_callback = self._on_swipe
         self.stack.addWidget(self.lists_board)
+        self.catalog_board = CatalogCanvas(self)
+        self.catalog_board.swipe_callback = self._on_swipe
+        self.stack.addWidget(self.catalog_board)
         self.day_board = DayTasksCanvas(self)
         self.day_board.swipe_callback = self._on_swipe
         self.stack.addWidget(self.day_board)
@@ -1164,6 +1167,7 @@ class MainWindow(QMainWindow):
             ("logs", "Логи"),
             ("backlog", "Бэклог"),
             ("lists", "Списки"),
+            ("catalog", "Проекты и Preset"),
             ("day_tasks", "Задачи дня"),
             ("morning_review", "Утренний разбор"),
         ]
@@ -1173,10 +1177,6 @@ class MainWindow(QMainWindow):
             self.boards.append(board)
             self.stack.addWidget(board)
             self.screen_titles.append((screen_id, title))
-        self.catalog_board = CatalogCanvas(self)
-        self.catalog_board.swipe_callback = self._on_swipe
-        self.stack.addWidget(self.catalog_board)
-        self.screen_titles.append(("catalog", "Проекты и Preset"))
         layout.addWidget(self.stack, 1)
 
         self.controls = QWidget(self)
@@ -2967,9 +2967,6 @@ class MainWindow(QMainWindow):
         was_cancelled = task.is_cancelled()
         old_start = task.start_at
         task.title = data["title"]
-        from .roles import coerce_role
-
-        task.role = coerce_role(data.get("role"))
         from .projects import resolve_project_name
         from .tags import CONTROL_TAG, apply_control_tag, clear_inbox_tag
 

@@ -1,4 +1,4 @@
-"""Цепочки Preset: JSON в data/presets и появление следующего шага во входящих."""
+"""Цепочки Preset: лист presets в tasks.xlsx и появление следующего шага во входящих."""
 
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ def presets_dir() -> Path:
 
 
 def list_preset_names() -> list[str]:
-    names = [path.stem for path in presets_dir().glob("*.json")]
-    names.sort(key=str.casefold)
-    return names
+    names = {path.stem for path in presets_dir().glob("*.json")}
+    names.update(_read_preset_sheet().keys())
+    return sorted(names, key=str.casefold)
 
 
 def preset_path(name: str) -> Path:
@@ -74,14 +74,146 @@ def _step_dict(task: Task) -> dict:
     }
 
 
-def save_preset(name: str, tasks: list[Task]) -> Path:
-    path = preset_path(name)
-    payload = {"tasks": steps_from_tasks(tasks)}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path
+def save_preset(name: str, tasks: list[Task]) -> str:
+    """Записать пресет на лист presets в tasks.xlsx. JSON-файл не создаётся."""
+    stem = preset_path(name).stem
+    _write_preset_sheet(stem, tasks)
+    return stem
+
+
+PRESET_SHEET = "presets"
+_PRESET_HEADERS = ("preset", "id", "название", "роль", "проект", "описание", "теги", "после")
+
+
+def _xlsx_path() -> Path:
+    from .xlsx_store import default_xlsx_path
+
+    return default_xlsx_path()
+
+
+def _split_cell_list(value) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    parts: list[str] = []
+    for chunk in text.replace(";", ",").split(","):
+        item = chunk.strip()
+        if item and item not in parts:
+            parts.append(item)
+    return parts
+
+
+def _sheet_step_rows(name: str, tasks: list[Task]) -> list[list]:
+    rows: list[list] = []
+    for step in steps_from_tasks(tasks):
+        rows.append(
+            [
+                name,
+                str(step.get("id") or ""),
+                step.get("title") or "",
+                step.get("role") or "",
+                step.get("project") or "",
+                step.get("description") or "",
+                ", ".join(str(tag) for tag in (step.get("tags") or []) if str(tag).strip()),
+                ", ".join(str(link) for link in (step.get("after") or []) if str(link).strip()),
+            ]
+        )
+    return rows
+
+
+def _read_preset_sheet(path: Path | None = None) -> dict[str, list[dict]]:
+    """Имя пресета → шаги в порядке строк листа presets."""
+    from .xlsx_io import load_workbook_retry
+
+    book = path or _xlsx_path()
+    if not book.exists():
+        return {}
+    try:
+        wb = load_workbook_retry(book, data_only=True)
+    except (OSError, ValueError):
+        return {}
+    if PRESET_SHEET not in wb.sheetnames:
+        wb.close()
+        return {}
+    ws = wb[PRESET_SHEET]
+    grouped: dict[str, list[dict]] = {}
+    for index, row in enumerate(ws.iter_rows(values_only=True)):
+        cells = list(row or [])
+        if index == 0:
+            continue
+        if not any(cell not in (None, "") for cell in cells):
+            continue
+        while len(cells) < len(_PRESET_HEADERS):
+            cells.append("")
+        preset_name = str(cells[0] or "").strip()
+        title = str(cells[2] or "").strip()
+        if not preset_name or not title:
+            continue
+        step = {
+            "title": title,
+            "role": str(cells[3] or ""),
+            "project": str(cells[4] or ""),
+            "description": str(cells[5] or ""),
+            "tags": _split_cell_list(cells[6]),
+        }
+        step_id = str(cells[1] or "").strip()
+        if step_id:
+            step["id"] = step_id
+        after = _split_cell_list(cells[7])
+        if after or step_id:
+            step["after"] = after
+        grouped.setdefault(preset_name, []).append(step)
+    wb.close()
+    return grouped
+
+
+def _replace_preset_rows(name: str, rows: list[list], *, path: Path | None = None) -> None:
+    from openpyxl import Workbook
+
+    from .xlsx_io import load_workbook_retry, save_workbook_atomic, xlsx_write_lock
+
+    book = path or _xlsx_path()
+    book.parent.mkdir(parents=True, exist_ok=True)
+    kept: list[list] = []
+    with xlsx_write_lock(book):
+        if book.exists():
+            wb = load_workbook_retry(book)
+            if PRESET_SHEET in wb.sheetnames:
+                ws_old = wb[PRESET_SHEET]
+                for index, row in enumerate(ws_old.iter_rows(values_only=True)):
+                    if index == 0:
+                        continue
+                    cells = [("" if cell is None else cell) for cell in row]
+                    if not cells or str(cells[0] or "").strip() == name:
+                        continue
+                    kept.append(cells)
+                del wb[PRESET_SHEET]
+        else:
+            wb = Workbook()
+            active = wb.active
+            active.title = "tasks"
+        ws = wb.create_sheet(PRESET_SHEET)
+        ws.append(list(_PRESET_HEADERS))
+        for cells in kept:
+            ws.append(cells)
+        for cells in rows:
+            ws.append(cells)
+        save_workbook_atomic(wb, book)
+
+
+def _write_preset_sheet(name: str, tasks: list[Task], *, path: Path | None = None) -> None:
+    _replace_preset_rows(name, _sheet_step_rows(name, tasks), path=path)
 
 
 def load_steps(name: str) -> list[dict]:
+    stem = Path(name).stem
+    sheet_steps = _read_preset_sheet().get(stem)
+    if sheet_steps:
+        return sheet_steps
+    return _steps_from_json(stem)
+
+
+def _steps_from_json(name: str) -> list[dict]:
     path = presets_dir() / f"{Path(name).stem}.json"
     if not path.exists():
         return []
@@ -117,11 +249,16 @@ def load_steps(name: str) -> list[dict]:
 
 
 def delete_preset(name: str) -> bool:
-    path = presets_dir() / f"{Path(name).stem}.json"
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
+    stem = Path(name).stem
+    path = presets_dir() / f"{stem}.json"
+    removed = False
+    if path.exists():
+        path.unlink()
+        removed = True
+    if stem in _read_preset_sheet():
+        _replace_preset_rows(stem, [])
+        removed = True
+    return removed
 
 
 def rename_preset(old: str, new: str) -> str:
@@ -131,6 +268,11 @@ def rename_preset(old: str, new: str) -> str:
         if dest.exists():
             dest.unlink()
         src.rename(dest)
+    old_stem = Path(old).stem
+    if old_stem != dest.stem and old_stem in _read_preset_sheet():
+        steps = _read_preset_sheet()[old_stem]
+        _replace_preset_rows(old_stem, [])
+        _write_preset_sheet(dest.stem, tasks_from_steps(steps))
     return dest.stem
 
 

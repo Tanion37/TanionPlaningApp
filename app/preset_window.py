@@ -1,12 +1,12 @@
-"""Окно «Новый Preset»: карточки и связи, сохранение в JSON."""
+"""Окно «Новый Preset»: карточки и связи, сохранение на лист presets."""
 
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
-    QFileDialog,
     QFormLayout,
+    QInputDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
 from .models import Task
 from .preset_store import (
     load_steps,
-    presets_dir,
     remove_with_outgoing,
     save_preset,
     tasks_from_steps,
@@ -227,19 +226,24 @@ class PresetWindow(QDialog):
         if not named:
             QMessageBox.information(self, "Новый Preset", "Создайте хотя бы одну задачу.")
             return
-        path, _selected = QFileDialog.getSaveFileName(
+        name, ok = QInputDialog.getText(
             self,
-            "Название файла JSON",
-            str(presets_dir() / (self.saved_name or "preset.json")),
-            "JSON (*.json)",
+            "Сохранить Preset",
+            "Название",
+            text=self.saved_name or "",
         )
-        if not path:
+        if not ok:
             return
-        if not path.lower().endswith(".json"):
-            path += ".json"
-        stem = path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-        if stem.lower().endswith(".json"):
-            stem = stem[:-5]
-        saved = save_preset(stem, self.tasks)
-        self.saved_name = saved.stem
+        name = name.strip()
+        if not name:
+            return
+        try:
+            self.saved_name = save_preset(name, self.tasks)
+        except (OSError, TimeoutError) as exc:
+            QMessageBox.warning(
+                self,
+                "Сохранить Preset",
+                f"Не удалось записать лист presets в tasks.xlsx.\n{exc}",
+            )
+            return
         self.accept()
