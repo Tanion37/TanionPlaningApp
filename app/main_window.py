@@ -3093,10 +3093,18 @@ def run_app(xlsx_path: Path | None = None) -> int:
 
     app = QApplication(sys.argv)
     from .paths import app_root
+    from .theme import apply_palette
+    from .theme import load as load_theme
 
     root = app_root()
     icon = app_icon(root)
     app.setWindowIcon(icon)
+    load_theme()
+    apply_palette(app)
+    from .login_dialog import ensure_login
+
+    if not ensure_login():
+        return 0
     load_order(root)
     store = TaskStore(xlsx_path)
     store.load()
