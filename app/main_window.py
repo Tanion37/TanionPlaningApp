@@ -51,7 +51,6 @@ from .lists_board import ListsCanvas
 from .lists_store import ListsStore
 from .logs_board import LogsCanvas
 from .models import Task
-from .notion_sync import NotionSyncManager
 from .period_roll import spawn_periodic_copies
 from .sorting import SCREENS, TRIAGE_COLUMNS, apply_task_to_triage_column
 from .tags import (
@@ -1349,13 +1348,12 @@ class MainWindow(QMainWindow):
         self.reload_boards()
         self._place_floating_controls()
 
-        self.notion_sync = NotionSyncManager(
-            self.store,
-            on_applied=self._on_notion_applied,
-            on_conflicts=self._on_notion_conflicts,
-            parent_timer_host=self,
-        )
-        QTimer.singleShot(1500, self.notion_sync.sync_now)
+        self._supabase_busy = False
+        self._supabase_timer = QTimer(self)
+        self._supabase_timer.setInterval(45 * 1000)
+        self._supabase_timer.timeout.connect(self._supabase_sync)
+        self._supabase_timer.start()
+        QTimer.singleShot(2000, self._supabase_sync)
         self.lists_store.on_change = self._note_lists_change
         self._periodic_timer = QTimer(self)
         self._periodic_timer.setInterval(60 * 1000)
@@ -1435,10 +1433,10 @@ class MainWindow(QMainWindow):
         self._xlsx_mtime = self._read_xlsx_mtime()
         orig_save = self.store.save
 
-        def save_tracked() -> None:
+        def save_tracked(*args, **kwargs) -> None:
             self._own_xlsx_save = True
             try:
-                orig_save()
+                orig_save(*args, **kwargs)
             finally:
                 self._xlsx_mtime = self._read_xlsx_mtime()
                 self._own_xlsx_save = False
@@ -1479,10 +1477,54 @@ class MainWindow(QMainWindow):
             return
         self._save_pending = False
         self.store.save()
+        self._schedule_supabase_sync()
 
     def flush_save(self) -> None:
         self._save_timer.stop()
         self._flush_save()
+
+    def _schedule_supabase_sync(self) -> None:
+        if self.demo_mode:
+            return
+        QTimer.singleShot(400, self._supabase_sync)
+
+    def _supabase_sync(self) -> None:
+        if self.demo_mode or getattr(self, "_supabase_busy", False):
+            return
+        from .supabase_sync import sync_store
+
+        self._supabase_busy = True
+        try:
+            changed, conflicts = sync_store(self.store)
+            if conflicts:
+                self._ask_supabase_conflicts(conflicts)
+            if changed or conflicts:
+                self.reload_boards()
+        finally:
+            self._supabase_busy = False
+
+    def _ask_supabase_conflicts(self, conflicts: list) -> None:
+        from .supabase_sync import keep_local, take_remote
+
+        for task in conflicts:
+            if not task.conflict:
+                continue
+            box = QMessageBox(self)
+            box.setWindowTitle("Синхронизация")
+            box.setText(
+                f"Задачу «{task.title}» изменил другой человек.\n"
+                "Оставить его версию или мою?"
+            )
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            box.button(QMessageBox.StandardButton.Yes).setText("Мою")
+            box.button(QMessageBox.StandardButton.No).setText("Его версию")
+            reply = box.exec()
+            if reply == QMessageBox.StandardButton.Yes:
+                keep_local(self.store, task)
+            elif reply == QMessageBox.StandardButton.No:
+                take_remote(self.store, task)
 
     def _roll_periodic_copies(self) -> bool:
         if self.demo_mode:
@@ -1890,6 +1932,8 @@ class MainWindow(QMainWindow):
 
     def _restore_task(self, task: Task, snap: dict) -> None:
         apply_state_to_task(task, snap)
+        task.deleted = 1 if snap.get("deleted") else 0
+        task.conflict = 0
 
     def _sync_history_buttons(self) -> None:
         if self.demo_mode:
@@ -2547,7 +2591,7 @@ class MainWindow(QMainWindow):
         """Единственный источник задач для UI."""
         if self.demo_mode:
             return list(self.demo_tasks)
-        return list(self.store.tasks)
+        return [task for task in self.store.tasks if not task.deleted]
 
     def _project_names(self) -> list[str]:
         from .projects import project_key

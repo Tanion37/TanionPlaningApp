@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,6 +43,8 @@ def _migrate_social_project(task: Task) -> bool:
 
 TZ = timezone(timedelta(hours=3))
 TASKS_SHEET = "tasks"
+# Один замок на процесс: интерфейс и синхронизация не пишут файл одновременно.
+STORE_LOCK = threading.RLock()
 
 COLUMNS: tuple[str, ...] = (
     "id",
@@ -69,6 +73,12 @@ COLUMNS: tuple[str, ...] = (
     "пред_id",
     "preset",
     "preset_шаг",
+    "uuid",
+    "пред_uuid",
+    "version",
+    "dirty",
+    "deleted",
+    "conflict",
 )
 
 HEADER_ALIASES: dict[str, str] = {
@@ -121,6 +131,13 @@ HEADER_ALIASES: dict[str, str] = {
     "preset_name": "preset",
     "preset_шаг": "preset_шаг",
     "preset_step": "preset_шаг",
+    "uuid": "uuid",
+    "пред_uuid": "пред_uuid",
+    "prev_uuid": "пред_uuid",
+    "version": "version",
+    "dirty": "dirty",
+    "deleted": "deleted",
+    "conflict": "conflict",
 }
 
 
@@ -215,10 +232,114 @@ def _cell(row: tuple, mapping: dict[str, int], name: str):
     return row[idx]
 
 
+def _flag(value) -> int:
+    if value in (None, "", 0, "0", False):
+        return 0
+    try:
+        return 1 if int(float(value)) else 0
+    except (TypeError, ValueError):
+        return 1 if str(value).strip().casefold() in {"1", "true", "да"} else 0
+
+
+def _version(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sync_fingerprint(task: Task) -> str:
+    """Поля, которые уходят в Supabase. Сдвиг карточки на доске сюда не входит."""
+    return json.dumps(
+        {
+            "title": task.title,
+            "description": task.description,
+            "author": task.author,
+            "executor": task.executor,
+            "project": task.project,
+            "tags": list(task.tags or []),
+            "created_at": format_date(task.created_at),
+            "completed_at": format_date(task.completed_at),
+            "start_at": format_date(task.start_at),
+            "due_at": format_date(task.due_at),
+            "remind_at": format_date(task.remind_at),
+            "remind_time": task.remind_time or "",
+            "remind_period": task.remind_period or "",
+            "role": task.role or "",
+            "prev_id": task.prev_id or "",
+            "deleted": int(task.deleted or 0),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _id_map_paths() -> list[Path]:
+    from .paths import app_root
+
+    root = app_root() / "data"
+    return [root / "sync" / "id_map.json", root / "id_map.json"]
+
+
+def _load_id_map() -> dict[str, str]:
+    """Старый id (001) → uuid облака. Файла нет — пусто, чужие uuid не выдумываем."""
+    for path in _id_map_paths():
+        if not path.exists():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("map"), dict):
+            raw = raw["map"]
+        if not isinstance(raw, dict):
+            continue
+        out: dict[str, str] = {}
+        for key, value in raw.items():
+            local_id = str(key).strip()
+            cloud_id = str(value).strip()
+            if local_id and cloud_id:
+                out[local_id] = cloud_id
+        return out
+    return {}
+
+
+def _apply_id_map(tasks: list[Task]) -> bool:
+    mapping = _load_id_map()
+    if not mapping:
+        return False
+    changed = False
+    for task in tasks:
+        cloud_id = mapping.get(task.id)
+        if cloud_id and task.cloud_uuid != cloud_id:
+            task.cloud_uuid = cloud_id
+            changed = True
+    by_id = {task.id: task for task in tasks}
+    for task in tasks:
+        parent = by_id.get(task.prev_id)
+        if parent is None or not parent.cloud_uuid:
+            continue
+        if task.prev_uuid != parent.cloud_uuid:
+            task.prev_uuid = parent.cloud_uuid
+            changed = True
+    return changed
+
+
+def _fill_prev_uuids(tasks: list[Task]) -> None:
+    by_id = {task.id: task for task in tasks}
+    for task in tasks:
+        parent = by_id.get((task.prev_id or "").strip())
+        if parent is not None and parent.cloud_uuid:
+            task.prev_uuid = parent.cloud_uuid
+
+
 class TaskStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_xlsx_path()
         self.tasks: list[Task] = []
+        self._fingerprints: dict[str, str] = {}
 
     def ensure_exists(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,6 +442,12 @@ class TaskStore:
                     prev_id=str(_cell(row, mapping, "пред_id") or "").strip(),
                     preset_name=str(_cell(row, mapping, "preset") or "").strip(),
                     preset_step=_parse_preset_step(_cell(row, mapping, "preset_шаг")),
+                    cloud_uuid=str(_cell(row, mapping, "uuid") or "").strip(),
+                    prev_uuid=str(_cell(row, mapping, "пред_uuid") or "").strip(),
+                    cloud_version=_version(_cell(row, mapping, "version")),
+                    dirty=_flag(_cell(row, mapping, "dirty")),
+                    deleted=_flag(_cell(row, mapping, "deleted")),
+                    conflict=_flag(_cell(row, mapping, "conflict")),
                 )
             )
         usage = collect_tag_usage(t.tags for t in tasks)
@@ -340,9 +467,12 @@ class TaskStore:
         if reconcile_links(tasks):
             migrated = True
         self.tasks = tasks
-        if unify_project_casing(self.tasks) or migrated:
-            self.save()
+        mapped = _apply_id_map(self.tasks)
+        _fill_prev_uuids(self.tasks)
+        if unify_project_casing(self.tasks) or migrated or mapped:
+            self.save(track_edits=False)
         else:
+            self._remember_fingerprints()
             # справочник тегов на отдельной вкладке
             self._ensure_tags_sheet()
         return self.tasks
@@ -361,55 +491,86 @@ class TaskStore:
         except OSError:
             pass
 
-    def save(self) -> None:
-        """Перезаписать лист tasks, сохранив остальные вкладки (lists и т.д.)."""
+    def mark_changed(self, task: Task) -> None:
+        """Новой задаче выдать uuid, любой правке поставить dirty."""
+        if not (task.cloud_uuid or "").strip():
+            task.cloud_uuid = str(uuid.uuid4())
+        task.dirty = 1
+
+    def _remember_fingerprints(self) -> None:
+        self._fingerprints = {task.id: _sync_fingerprint(task) for task in self.tasks}
+
+    def _mark_edited(self) -> None:
+        for task in self.tasks:
+            current = _sync_fingerprint(task)
+            previous = self._fingerprints.get(task.id)
+            if previous is None:
+                self._fingerprints[task.id] = current
+                continue
+            if current != previous:
+                self.mark_changed(task)
+                self._fingerprints[task.id] = current
+
+    def save(self, *, track_edits: bool = True) -> None:
+        """Перезаписать лист tasks, сохранив остальные вкладки (lists, presets)."""
         from .tags_sheet import write_tags_sheet
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with xlsx_write_lock(self.path):
-            if self.path.exists():
-                wb = load_workbook_retry(self.path)
-                if TASKS_SHEET in wb.sheetnames:
-                    del wb[TASKS_SHEET]
-                ws = wb.create_sheet(TASKS_SHEET, 0)
-            else:
-                wb = Workbook()
-                ws = wb.active
-                ws.title = TASKS_SHEET
-            ws.append(list(COLUMNS))
-            for task in self.tasks:
-                ws.append(
-                    [
-                        task.id,
-                        task.title,
-                        format_date(task.created_at),
-                        format_date(task.completed_at),
-                        format_date(task.start_at),
-                        format_date(task.due_at),
-                        format_date(task.remind_at),
-                        getattr(task, "remind_time", "") or "",
-                        task.remind_period,
-                        task.author,
-                        getattr(task, "executor", "") or "",
-                        task.project,
-                        task.description,
-                        tags_to_cell(task.tags),
-                        task.pos_x,
-                        task.pos_y,
-                        task.author_id,
-                        task.chat_id,
-                        task.source,
-                        getattr(task, "series_id", "") or "",
-                        getattr(task, "role", "") or "",
-                        int(getattr(task, "after_count", 0) or 0),
-                        _dump_after_ids(getattr(task, "after_ids", None) or []),
-                        getattr(task, "prev_id", "") or "",
-                        getattr(task, "preset_name", "") or "",
-                        int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1),
-                    ]
-                )
-            write_tags_sheet(wb)
-            save_workbook_atomic(wb, self.path)
+        with STORE_LOCK:
+            if track_edits:
+                self._mark_edited()
+            _fill_prev_uuids(self.tasks)
+            with xlsx_write_lock(self.path):
+                if self.path.exists():
+                    wb = load_workbook_retry(self.path)
+                    if TASKS_SHEET in wb.sheetnames:
+                        del wb[TASKS_SHEET]
+                    ws = wb.create_sheet(TASKS_SHEET, 0)
+                else:
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = TASKS_SHEET
+                ws.append(list(COLUMNS))
+                for task in self.tasks:
+                    ws.append(
+                        [
+                            task.id,
+                            task.title,
+                            format_date(task.created_at),
+                            format_date(task.completed_at),
+                            format_date(task.start_at),
+                            format_date(task.due_at),
+                            format_date(task.remind_at),
+                            getattr(task, "remind_time", "") or "",
+                            task.remind_period,
+                            task.author,
+                            getattr(task, "executor", "") or "",
+                            task.project,
+                            task.description,
+                            tags_to_cell(task.tags),
+                            task.pos_x,
+                            task.pos_y,
+                            task.author_id,
+                            task.chat_id,
+                            task.source,
+                            getattr(task, "series_id", "") or "",
+                            getattr(task, "role", "") or "",
+                            int(getattr(task, "after_count", 0) or 0),
+                            _dump_after_ids(getattr(task, "after_ids", None) or []),
+                            getattr(task, "prev_id", "") or "",
+                            getattr(task, "preset_name", "") or "",
+                            int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1),
+                            getattr(task, "cloud_uuid", "") or "",
+                            getattr(task, "prev_uuid", "") or "",
+                            "" if task.cloud_version is None else int(task.cloud_version),
+                            int(task.dirty or 0),
+                            int(task.deleted or 0),
+                            int(task.conflict or 0),
+                        ]
+                    )
+                write_tags_sheet(wb)
+                save_workbook_atomic(wb, self.path)
+            self._remember_fingerprints()
 
     def add_task(self, title: str, *, persist: bool = True, **kwargs) -> Task:
         task = Task(
@@ -439,6 +600,12 @@ class TaskStore:
             prev_id=str(kwargs.get("prev_id") or "").strip(),
             preset_name=str(kwargs.get("preset_name") or "").strip(),
             preset_step=int(kwargs.get("preset_step") if kwargs.get("preset_step") is not None else -1),
+            cloud_uuid=str(kwargs.get("cloud_uuid") or "").strip() or str(uuid.uuid4()),
+            prev_uuid=str(kwargs.get("prev_uuid") or "").strip(),
+            cloud_version=_version(kwargs.get("cloud_version")),
+            dirty=1 if kwargs.get("dirty") is None else _flag(kwargs.get("dirty")),
+            deleted=_flag(kwargs.get("deleted")),
+            conflict=_flag(kwargs.get("conflict")),
         )
         from .period_roll import ensure_task_series
 
@@ -455,10 +622,12 @@ class TaskStore:
         return None
 
     def remove_task(self, task_id: str, *, persist: bool = True) -> bool:
-        before = len(self.tasks)
-        self.tasks = [t for t in self.tasks if t.id != task_id]
-        if len(self.tasks) == before:
+        """Пометить удалённой. Строка остаётся, чтобы синхронизация отправила deleted."""
+        task = self.get(task_id)
+        if task is None or task.deleted:
             return False
+        self.mark_changed(task)
+        task.deleted = 1
         if persist:
             self.save()
         return True

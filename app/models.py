@@ -60,6 +60,12 @@ class Task:
     prev_id: str = ""  # id узла, после которого стоит эта карточка
     preset_name: str = ""
     preset_step: int = -1
+    cloud_uuid: str = ""  # id строки в Supabase
+    prev_uuid: str = ""  # uuid родителя в облаке
+    cloud_version: int | None = None
+    dirty: int = 0  # 1 — локальная правка ещё не ушла в облако
+    deleted: int = 0  # 1 — строка снята, но остаётся в файле для синхронизации
+    conflict: int = 0
 
     def has_tag(self, key: str) -> bool:
         return key in self.tags
