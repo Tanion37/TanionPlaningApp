@@ -283,6 +283,17 @@ def _id_map_paths() -> list[Path]:
     return [root / "sync" / "id_map.json", root / "id_map.json"]
 
 
+def _map_uuid(mapping: dict[str, str], local_id: str) -> str:
+    key = (local_id or "").strip()
+    if key in mapping:
+        return mapping[key]
+    if key.isdigit():
+        padded = key.zfill(3)
+        if padded in mapping:
+            return mapping[padded]
+    return ""
+
+
 def _load_id_map() -> dict[str, str]:
     """Старый id (001) → uuid облака. Файла нет — пусто, чужие uuid не выдумываем."""
     for path in _id_map_paths():
@@ -312,7 +323,7 @@ def _apply_id_map(tasks: list[Task]) -> bool:
         return False
     changed = False
     for task in tasks:
-        cloud_id = mapping.get(task.id)
+        cloud_id = _map_uuid(mapping, task.id)
         if cloud_id and task.cloud_uuid != cloud_id:
             task.cloud_uuid = cloud_id
             changed = True

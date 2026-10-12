@@ -177,6 +177,18 @@ def _push(store: TaskStore, role_ids: dict[str, str], role_names: dict[str, str]
         data = to_remote(task, store.tasks, role_ids)
         try:
             if not task.cloud_version:
+                found = (
+                    supabase.table("tasks")
+                    .select("version")
+                    .eq("id", task.cloud_uuid)
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+                if found and found[0].get("version") not in (None, ""):
+                    task.cloud_version = int(found[0]["version"])
+            if not task.cloud_version:
                 res = supabase.table("tasks").insert(data).execute()
             else:
                 res = (
@@ -201,6 +213,7 @@ def _push(store: TaskStore, role_ids: dict[str, str], role_names: dict[str, str]
 
 def _pull(store: TaskStore, role_names: dict[str, str]) -> bool:
     from .supa import supabase
+    from .xlsx_store import _load_id_map, _map_uuid
 
     since = _last_pulled_at()
     query = supabase.table("tasks").select("*").order("updated_at")
@@ -208,12 +221,26 @@ def _pull(store: TaskStore, role_names: dict[str, str]) -> bool:
         query = query.gt("updated_at", since)
     remote_rows = query.execute().data or []
     by_uuid = {task.cloud_uuid: task for task in store.tasks if task.cloud_uuid}
+    reverse = {cloud: local for local, cloud in _load_id_map().items()}
     changed = False
     for remote in remote_rows:
         cloud_id = str(remote.get("id") or "")
         if not cloud_id:
             continue
         local = by_uuid.get(cloud_id)
+        if local is None:
+            local_id = reverse.get(cloud_id, "")
+            if local_id:
+                local = next(
+                    (
+                        task
+                        for task in store.tasks
+                        if _map_uuid({local_id: cloud_id}, task.id) == cloud_id
+                    ),
+                    None,
+                )
+                if local is not None:
+                    by_uuid[cloud_id] = local
         if local is None:
             local = Task(
                 id=_next_id(store.tasks),
@@ -241,8 +268,12 @@ def sync_store(store: TaskStore) -> tuple[bool, list[Task]]:
     """Сначала отправка, потом получение. Сеть оборвалась — dirty остаётся на следующий раз."""
     if not _logged_in():
         return False, []
+    from .xlsx_store import _apply_id_map
+
     with STORE_LOCK:
         try:
+            _apply_id_map(store.tasks)
+            _fill_prev_uuids(store.tasks)
             role_ids, role_names = _load_roles()
             changed = _push(store, role_ids, role_names)
             changed = _pull(store, role_names) or changed
