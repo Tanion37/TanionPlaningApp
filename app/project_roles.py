@@ -76,32 +76,38 @@ def remember_executor(task: Task, executor: str) -> bool:
     return True
 
 
-def settle_assignment(store, task: Task) -> bool:
-    """Закрыть карточку, когда выбраны и роль, и исполнитель."""
-    if not is_role_and_executor_task(task) or task.is_done():
+def settle_assignment(store, task: Task, path: Path | None = None) -> bool:
+    """Когда выбраны роль и исполнитель — записать их и сдать карточку в выполненные."""
+    if not is_role_and_executor_task(task):
         return False
     role = pending_role(task)
     person = pending_executor(task)
     if not role or not person:
         return False
+    from .tags import DONE_TAG
+
+    if task.is_done() and task.has_tag(DONE_TAG):
+        return False
     source = store.get(task.prev_id) if task.prev_id and hasattr(store, "get") else None
-    if source is not None and not getattr(source, "deleted", 0):
+    if source is not None and not getattr(source, "deleted", 0) and not is_role_and_executor_task(source):
         source.role = role
         source.executor = person
         if hasattr(store, "mark_changed"):
             store.mark_changed(source)
     project = (task.project or (getattr(source, "project", "") if source else "") or "").strip()
     if project:
-        assign_executor(project, role, person)
+        assign_executor(project, role, person, path)
         apply_executor_to_tasks(store, project, role, person)
     from datetime import date
 
-    from .tags import DONE_TAG, INBOX_TAG
+    from .tags import ACTUAL_TAG, CANCEL_TAG, CONTROL_TAG, INBOX_TAG
 
-    task.add_tag(DONE_TAG)
+    task.remove_tag(CANCEL_TAG)
     task.remove_tag(INBOX_TAG)
-    if task.completed_at is None:
-        task.completed_at = date.today()
+    task.remove_tag(ACTUAL_TAG)
+    task.remove_tag(CONTROL_TAG)
+    task.add_tag(DONE_TAG)
+    task.completed_at = date.today()
     if hasattr(store, "mark_changed"):
         store.mark_changed(task)
     return True
@@ -301,6 +307,8 @@ def _open_both_assignment(store, source: Task) -> Task | None:
 
 def bind_task_executor(store, task: Task, path: Path | None = None) -> list[Task]:
     """Поставить исполнителя роли. Если роли нет — руководитель назначает роль и исполнителя."""
+    if is_role_and_executor_task(task) or role_from_assignment(task):
+        return []
     role = (task.role or "").strip()
     project = (task.project or "").strip()
     if not project:

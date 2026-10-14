@@ -3248,7 +3248,11 @@ class MainWindow(QMainWindow):
             task.remove_tag(DONE_TAG)
             if CANCEL_TAG not in task.tags:
                 task.tags.append(CANCEL_TAG)
-        if (task.project or "").strip() and not (task.role or "").strip():
+        if (
+            (task.project or "").strip()
+            and not (task.role or "").strip()
+            and not is_role_and_executor_task(task)
+        ):
             from .project_roles import bind_task_executor
 
             for extra in bind_task_executor(self.store, task):
