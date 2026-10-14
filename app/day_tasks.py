@@ -124,10 +124,15 @@ def apply_executor_assignment(task: Task, executor: str) -> bool:
 
     Колонка исполнителя на Дне показывает только актуальные чужие задачи;
     входящие — только Юру. Без этой пары тегов карточка пропадает с экрана.
+    Карточка «Назначить роль и исполнителя» остаётся, пока не выбрана ещё и роль.
     """
+    from .project_roles import is_role_and_executor_task, remember_executor
+
     name = (executor or "").strip()
     if not name:
         return False
+    if is_role_and_executor_task(task):
+        return remember_executor(task, name)
     changed = False
     old = (getattr(task, "executor", "") or "").strip()
     if old != name:

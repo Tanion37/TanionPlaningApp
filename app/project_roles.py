@@ -31,6 +31,82 @@ def is_role_and_executor_task(task: Task) -> bool:
     return (getattr(task, "title", "") or "").strip() == ASSIGN_BOTH
 
 
+def _meta(task: Task, key: str) -> str:
+    prefix = f"{key}: "
+    for line in (getattr(task, "description", "") or "").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return ""
+
+
+def _set_meta(task: Task, key: str, value: str) -> None:
+    prefix = f"{key}: "
+    lines = [
+        line
+        for line in (getattr(task, "description", "") or "").splitlines()
+        if not line.startswith(prefix)
+    ]
+    text = (value or "").strip()
+    if text:
+        lines.append(prefix + text)
+    task.description = "\n".join(lines).strip()
+
+
+def pending_role(task: Task) -> str:
+    return _meta(task, "роль")
+
+
+def pending_executor(task: Task) -> str:
+    return _meta(task, "исполнитель")
+
+
+def remember_role(task: Task, role: str) -> bool:
+    role = (role or "").strip()
+    if pending_role(task) == role:
+        return False
+    _set_meta(task, "роль", role)
+    return True
+
+
+def remember_executor(task: Task, executor: str) -> bool:
+    executor = (executor or "").strip()
+    if not executor or pending_executor(task) == executor:
+        return False
+    _set_meta(task, "исполнитель", executor)
+    return True
+
+
+def settle_assignment(store, task: Task) -> bool:
+    """Закрыть карточку, когда выбраны и роль, и исполнитель."""
+    if not is_role_and_executor_task(task) or task.is_done():
+        return False
+    role = pending_role(task)
+    person = pending_executor(task)
+    if not role or not person:
+        return False
+    source = store.get(task.prev_id) if task.prev_id and hasattr(store, "get") else None
+    if source is not None and not getattr(source, "deleted", 0):
+        source.role = role
+        source.executor = person
+        if hasattr(store, "mark_changed"):
+            store.mark_changed(source)
+    project = (task.project or (getattr(source, "project", "") if source else "") or "").strip()
+    if project:
+        assign_executor(project, role, person)
+        apply_executor_to_tasks(store, project, role, person)
+    from datetime import date
+
+    from .tags import DONE_TAG, INBOX_TAG
+
+    task.add_tag(DONE_TAG)
+    task.remove_tag(INBOX_TAG)
+    if task.completed_at is None:
+        task.completed_at = date.today()
+    if hasattr(store, "mark_changed"):
+        store.mark_changed(task)
+    return True
+
+
 def _path(path: Path | None) -> Path:
     if path is not None:
         return path

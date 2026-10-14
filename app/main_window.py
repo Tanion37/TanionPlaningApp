@@ -1902,6 +1902,9 @@ class MainWindow(QMainWindow):
             before_text = format_task_snapshot(task)
             if not apply_executor_assignment(task, name):
                 continue
+            from .project_roles import settle_assignment
+
+            settle_assignment(self.store, task)
             changed = True
             if not self.demo_mode:
                 append_log(
@@ -2157,6 +2160,9 @@ class MainWindow(QMainWindow):
 
             if not apply_executor_assignment(task, key):
                 return
+            from .project_roles import settle_assignment
+
+            settle_assignment(self.store, task)
             if not self.demo_mode:
                 self.request_save()
                 append_log(
@@ -2272,6 +2278,10 @@ class MainWindow(QMainWindow):
         if action == ACTION_DONE and not was_done and not self._claim_role_assignment(task):
             return
         apply_morning_action(task, action)
+        from .project_roles import is_role_and_executor_task, settle_assignment
+
+        if is_role_and_executor_task(task):
+            settle_assignment(self.store, task)
         if action == ACTION_DONE and not was_done and task.is_done():
             self._advance_preset_chain(task)
         if self.demo_mode:
@@ -2465,6 +2475,19 @@ class MainWindow(QMainWindow):
 
         task = self._find_task(task_id)
         if task is None:
+            return
+        from .project_roles import is_role_and_executor_task, remember_role, settle_assignment
+
+        if is_role_and_executor_task(task):
+            role = coerce_role(role)
+            if not remember_role(task, role) and not settle_assignment(self.store, task):
+                return
+            settle_assignment(self.store, task)
+            if not self.demo_mode:
+                self.request_save()
+            self._last_paint_key = None
+            self.reload_boards()
+            self._sync_history_buttons()
             return
         role = coerce_role(role)
         if task.role == role:
@@ -3179,10 +3202,17 @@ class MainWindow(QMainWindow):
         from .projects import resolve_project_name
         from .tags import CONTROL_TAG, apply_control_tag, clear_inbox_tag
 
+        from .project_roles import is_role_and_executor_task, remember_executor, settle_assignment
+
         task.project = resolve_project_name(data["project"], self.store.tasks)
         task.description = data["description"]
         task.author = data["author"]
-        task.executor = str(data.get("executor") or "").strip()
+        chosen_executor = str(data.get("executor") or "").strip()
+        if is_role_and_executor_task(task):
+            if chosen_executor and chosen_executor != (task.executor or "").strip():
+                remember_executor(task, chosen_executor)
+        else:
+            task.executor = chosen_executor
         task.created_at = data["created_at"]
         task.completed_at = data["completed_at"]
         new_start = data["start_at"]
@@ -3224,6 +3254,8 @@ class MainWindow(QMainWindow):
             for extra in bind_task_executor(self.store, task):
                 append_log("created", extra, detail="назначить роль", source="app")
                 self._note_task_change(extra, action="upsert")
+        if is_role_and_executor_task(task):
+            settle_assignment(self.store, task)
         self.request_save()
         if task.is_done() and not was_done:
             self._advance_preset_chain(task)

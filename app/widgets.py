@@ -62,8 +62,11 @@ class TaskBlock(QWidget):
         show_role: bool = False,
     ) -> None:
         super().__init__(parent)
+        from .project_roles import is_role_and_executor_task
+
         self.task = task
-        self.show_role = show_role
+        self._role_assignment = is_role_and_executor_task(task)
+        self.show_role = show_role or self._role_assignment
         self._marked = False
         self.setFixedSize(TASK_W, TASK_BLOCK_H)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
@@ -89,7 +92,12 @@ class TaskBlock(QWidget):
             self._role.setFont(QFont("Segoe UI", 8))
             self._role.setToolTip("Роль")
             self._role.addItem("роль", "")
-            for label in role_labels():
+            labels = role_labels()
+            if self._role_assignment:
+                from .project_roles import PROJECT_LEAD
+
+                labels = [label for label in labels if label != PROJECT_LEAD]
+            for label in labels:
                 self._role.addItem(label, label)
             self._role.currentIndexChanged.connect(self._on_role)
             self._role.installEventFilter(self)
@@ -140,7 +148,12 @@ class TaskBlock(QWidget):
 
     def _sync_chrome(self) -> None:
         if self._role is not None:
-            role = coerce_role(self.task.role)
+            if self._role_assignment:
+                from .project_roles import pending_role
+
+                role = pending_role(self.task)
+            else:
+                role = coerce_role(self.task.role)
             self._role.blockSignals(True)
             index = self._role.findData(role)
             self._role.setCurrentIndex(index if index >= 0 else 0)
@@ -160,7 +173,13 @@ class TaskBlock(QWidget):
         if self._role is None:
             return
         role = coerce_role(self._role.currentData())
-        if role == coerce_role(self.task.role):
+        if self._role_assignment:
+            from .project_roles import pending_role
+
+            current = pending_role(self.task)
+        else:
+            current = coerce_role(self.task.role)
+        if role == current:
             return
         self.role_changed.emit(self.task.id, role)
 
