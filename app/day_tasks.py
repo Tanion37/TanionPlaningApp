@@ -119,20 +119,29 @@ def priority_tasks_flat(tasks: Iterable[Task]) -> list[Task]:
     return out
 
 
-def apply_executor_assignment(task: Task, executor: str) -> bool:
+def apply_executor_assignment(task: Task, executor: str, store=None) -> bool:
     """Поставить исполнителя, снять входящую, сделать актуальной.
 
     Колонка исполнителя на Дне показывает только актуальные чужие задачи;
     входящие — только Юру. Без этой пары тегов карточка пропадает с экрана.
     Карточка «Назначить роль и исполнителя» остаётся, пока не выбрана ещё и роль.
+    Обычная задача без роли тоже остаётся во входящих: исполнитель ждёт на той карточке.
     """
-    from .project_roles import is_role_and_executor_task, remember_executor, role_from_assignment
+    from .project_roles import (
+        hold_executor_without_role,
+        is_role_and_executor_task,
+        remember_executor,
+        role_from_assignment,
+    )
 
     name = (executor or "").strip()
     if not name:
         return False
     if is_role_and_executor_task(task) or role_from_assignment(task):
         return remember_executor(task, name)
+    held = hold_executor_without_role(store, task, name)
+    if held is not None:
+        return held
     changed = False
     old = (getattr(task, "executor", "") or "").strip()
     if old != name:

@@ -96,6 +96,46 @@ def remember_executor(task: Task, executor: str) -> bool:
     return True
 
 
+def hold_executor_without_role(store, task: Task, person: str) -> bool | None:
+    """Задача проекта без роли остаётся во входящих.
+
+    Чужой исполнитель ждёт на карточке «Назначить роль и исполнителя».
+    None — у задачи уже есть роль или это сама карточка назначения.
+    True или False — случай обработан, и изменилось ли что-то.
+    """
+    if store is None:
+        return None
+    if is_role_and_executor_task(task) or role_from_assignment(task):
+        return None
+    if (getattr(task, "role", "") or "").strip():
+        return None
+    if not (getattr(task, "project", "") or "").strip():
+        return None
+    from .executors_store import is_own_executor
+
+    person = (person or "").strip()
+    changed = False
+    if is_own_executor(person):
+        if (getattr(task, "executor", "") or "").strip() != person:
+            task.executor = person
+            changed = True
+            if hasattr(store, "mark_changed"):
+                store.mark_changed(task)
+        return changed
+    bind_task_executor(store, task, getattr(store, "path", None))
+    card = _open_both_assignment(store, task)
+    if card is not None and remember_executor(card, person):
+        changed = True
+        if hasattr(store, "mark_changed"):
+            store.mark_changed(card)
+    if not is_own_executor(getattr(task, "executor", "")):
+        task.executor = ""
+        changed = True
+        if hasattr(store, "mark_changed"):
+            store.mark_changed(task)
+    return changed
+
+
 def _finish_assignment(store, task: Task, role: str, person: str, path: Path | None) -> bool:
     from datetime import date
 
@@ -107,7 +147,9 @@ def _finish_assignment(store, task: Task, role: str, person: str, path: Path | N
     if source is not None and not getattr(source, "deleted", 0) and source.id != task.id:
         if not is_role_and_executor_task(source) and not role_from_assignment(source):
             source.role = role
-            source.executor = person
+            from .day_tasks import apply_executor_assignment
+
+            apply_executor_assignment(source, person)
             if hasattr(store, "mark_changed"):
                 store.mark_changed(source)
     project = (task.project or (getattr(source, "project", "") if source else "") or "").strip()

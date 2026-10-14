@@ -1900,7 +1900,8 @@ class MainWindow(QMainWindow):
                 continue
             before_state = snapshot_dict(task)
             before_text = format_task_snapshot(task)
-            if not apply_executor_assignment(task, name):
+            book = None if self.demo_mode else self.store
+            if not apply_executor_assignment(task, name, store=book):
                 continue
             from .project_roles import settle_assignment
 
@@ -2158,7 +2159,8 @@ class MainWindow(QMainWindow):
         if kind == "executor":
             from .day_tasks import apply_executor_assignment
 
-            if not apply_executor_assignment(task, key):
+            book = None if self.demo_mode else self.store
+            if not apply_executor_assignment(task, key, store=book):
                 return
             from .project_roles import settle_assignment
 
@@ -2277,7 +2279,7 @@ class MainWindow(QMainWindow):
         was_done = task.is_done()
         if action == ACTION_DONE and not was_done and not self._claim_role_assignment(task):
             return
-        apply_morning_action(task, action)
+        apply_morning_action(task, action, store=None if self.demo_mode else self.store)
         from .project_roles import is_role_and_executor_task, settle_assignment
 
         from .project_roles import role_from_assignment as _role_from_assignment
@@ -3172,9 +3174,13 @@ class MainWindow(QMainWindow):
             elif (task.project or "").strip() and not (task.role or "").strip():
                 from .project_roles import bind_task_executor
 
-                for extra in bind_task_executor(self.store, task):
-                    append_log("created", extra, detail="назначить роль", source="app")
-                    self._note_task_change(extra, action="upsert")
+            for extra in bind_task_executor(self.store, task):
+                append_log("created", extra, detail="назначить роль", source="app")
+                self._note_task_change(extra, action="upsert")
+            if (task.project or "").strip() and not (task.role or "").strip():
+                from .project_roles import hold_executor_without_role
+
+                hold_executor_without_role(self.store, task, task.executor)
             if task.is_done() and task.completed_at is None:
                 task.completed_at = date.today()
             append_log("created", task, source="app", before_state=None)
@@ -3221,6 +3227,7 @@ class MainWindow(QMainWindow):
         from .tags import CONTROL_TAG, apply_control_tag, clear_inbox_tag
 
         from .project_roles import (
+            hold_executor_without_role,
             is_role_and_executor_task,
             remember_executor,
             role_from_assignment,
@@ -3240,7 +3247,9 @@ class MainWindow(QMainWindow):
                 remember_executor(task, "")
         else:
             task.description = data["description"]
-            task.executor = chosen_executor
+            held = hold_executor_without_role(self.store, task, chosen_executor)
+            if held is None:
+                task.executor = chosen_executor
         task.created_at = data["created_at"]
         task.completed_at = data["completed_at"]
         new_start = data["start_at"]

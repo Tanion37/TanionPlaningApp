@@ -104,7 +104,7 @@ def current_inbox_task(tasks: Iterable[Task], today: date | None = None) -> Task
     return items[0] if items else None
 
 
-def apply_morning_action(task: Task, action: str, today: date | None = None) -> None:
+def apply_morning_action(task: Task, action: str, today: date | None = None, store=None) -> None:
     today = today or date.today()
     if action == ACTION_GORIT:
         apply_priority_section(task, SECTION_GORIT)
@@ -135,6 +135,6 @@ def apply_morning_action(task: Task, action: str, today: date | None = None) -> 
             task.completed_at = today
         return
     if action.startswith("executor:"):
-        apply_executor_assignment(task, action.split(":", 1)[1])
+        apply_executor_assignment(task, action.split(":", 1)[1], store=store)
         return
     raise ValueError(f"Неизвестное действие утреннего разбора: {action}")
