@@ -102,6 +102,11 @@ class TaskBlock(QWidget):
             self._role.currentIndexChanged.connect(self._on_role)
             self._role.installEventFilter(self)
 
+        self._choice: QLabel | None = None
+        if self._role_assignment:
+            self._choice = QLabel(self)
+            self._choice.setFont(QFont("Segoe UI", 8))
+
         self._plus_btn = QPushButton("+", self)
         self._plus_btn.setFont(QFont("Segoe UI", 8))
         self._plus_btn.setToolTip("Добавить поле имени")
@@ -131,6 +136,17 @@ class TaskBlock(QWidget):
             y += 2
             self._role.setGeometry(4, y, TASK_W - 8, 22)
             y += 24
+        if getattr(self, "_choice", None) is not None:
+            from .project_roles import pending_executor
+
+            person = pending_executor(self.task)
+            if person:
+                self._choice.show()
+                self._choice.setText(f"Исполнитель: {person}")
+                self._choice.setGeometry(4, y, TASK_W - 8, 18)
+                y += 20
+            else:
+                self._choice.hide()
         for row in self._rows:
             row["edit"].setGeometry(4, y, TASK_W - 8, 22)
             y += 24
@@ -1511,7 +1527,16 @@ class EditTaskDialog(_EnterAcceptDialog):
         form.addRow("Проект", self.project_edit)
         form.addRow("", _project_buttons_row(self.project_edit, project_names))
 
-        self.description_edit = QPlainTextEdit(task.description)
+        from .project_roles import (
+            description_without_choices,
+            is_role_and_executor_task,
+            pending_executor,
+            role_from_assignment,
+        )
+
+        self._keeps_executor = is_role_and_executor_task(task) or bool(role_from_assignment(task))
+        shown_description = description_without_choices(task) if self._keeps_executor else (task.description or "")
+        self.description_edit = QPlainTextEdit(shown_description)
         self.description_edit.setPlaceholderText("Расширенное описание")
         self.description_edit.setMinimumHeight(140)
         form.addRow("Описание", self.description_edit)
@@ -1520,7 +1545,10 @@ class EditTaskDialog(_EnterAcceptDialog):
         form.addRow("Кто поставил", self.author)
 
         names = list(executor_names or [])
-        current = getattr(task, "executor", "") or ""
+        if self._keeps_executor:
+            current = pending_executor(task)
+        else:
+            current = getattr(task, "executor", "") or ""
         if current and current not in names:
             names = [current, *names]
         self.executor = QLineEdit(current)

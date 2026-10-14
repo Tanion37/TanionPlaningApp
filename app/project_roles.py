@@ -52,6 +52,26 @@ def _set_meta(task: Task, key: str, value: str) -> None:
     task.description = "\n".join(lines).strip()
 
 
+def description_without_choices(task: Task) -> str:
+    """Текст задачи без служебных строк выбора роли и исполнителя."""
+    lines = []
+    for line in (getattr(task, "description", "") or "").splitlines():
+        if line.startswith("роль: ") or line.startswith("исполнитель: "):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def set_description_keep_choices(task: Task, text: str) -> None:
+    role = pending_role(task)
+    person = pending_executor(task)
+    task.description = (text or "").strip()
+    if role:
+        _set_meta(task, "роль", role)
+    if person:
+        _set_meta(task, "исполнитель", person)
+
+
 def pending_role(task: Task) -> str:
     return _meta(task, "роль")
 
@@ -70,38 +90,30 @@ def remember_role(task: Task, role: str) -> bool:
 
 def remember_executor(task: Task, executor: str) -> bool:
     executor = (executor or "").strip()
-    if not executor or pending_executor(task) == executor:
+    if pending_executor(task) == executor:
         return False
     _set_meta(task, "исполнитель", executor)
     return True
 
 
-def settle_assignment(store, task: Task, path: Path | None = None) -> bool:
-    """Когда выбраны роль и исполнитель — записать их и сдать карточку в выполненные."""
-    if not is_role_and_executor_task(task):
-        return False
-    role = pending_role(task)
-    person = pending_executor(task)
-    if not role or not person:
-        return False
-    from .tags import DONE_TAG
+def _finish_assignment(store, task: Task, role: str, person: str, path: Path | None) -> bool:
+    from datetime import date
+
+    from .tags import ACTUAL_TAG, CANCEL_TAG, CONTROL_TAG, DONE_TAG, INBOX_TAG
 
     if task.is_done() and task.has_tag(DONE_TAG):
         return False
     source = store.get(task.prev_id) if task.prev_id and hasattr(store, "get") else None
-    if source is not None and not getattr(source, "deleted", 0) and not is_role_and_executor_task(source):
-        source.role = role
-        source.executor = person
-        if hasattr(store, "mark_changed"):
-            store.mark_changed(source)
+    if source is not None and not getattr(source, "deleted", 0) and source.id != task.id:
+        if not is_role_and_executor_task(source) and not role_from_assignment(source):
+            source.role = role
+            source.executor = person
+            if hasattr(store, "mark_changed"):
+                store.mark_changed(source)
     project = (task.project or (getattr(source, "project", "") if source else "") or "").strip()
     if project:
         assign_executor(project, role, person, path)
         apply_executor_to_tasks(store, project, role, person)
-    from datetime import date
-
-    from .tags import ACTUAL_TAG, CANCEL_TAG, CONTROL_TAG, INBOX_TAG
-
     task.remove_tag(CANCEL_TAG)
     task.remove_tag(INBOX_TAG)
     task.remove_tag(ACTUAL_TAG)
@@ -111,6 +123,19 @@ def settle_assignment(store, task: Task, path: Path | None = None) -> bool:
     if hasattr(store, "mark_changed"):
         store.mark_changed(task)
     return True
+
+
+def settle_assignment(store, task: Task, path: Path | None = None) -> bool:
+    """Когда выбор полный — записать его и сдать карточку в выполненные."""
+    if is_role_and_executor_task(task):
+        role = pending_role(task)
+        person = pending_executor(task)
+    else:
+        role = role_from_assignment(task)
+        person = pending_executor(task)
+    if not role or not person:
+        return False
+    return _finish_assignment(store, task, role, person, path)
 
 
 def _path(path: Path | None) -> Path:
@@ -331,9 +356,13 @@ def bind_task_executor(store, task: Task, path: Path | None = None) -> list[Task
         return [created]
     person = executor_for(project, role, path)
     if person:
-        task.executor = person
+        if not (task.executor or "").strip():
+            task.executor = person
         return []
-    task.executor = ""
+    already = (task.executor or "").strip()
+    if already and role != PROJECT_LEAD:
+        assign_executor(project, role, already, path)
+        return []
     if role == PROJECT_LEAD:
         return []
     lead = executor_for(project, PROJECT_LEAD, path)

@@ -2280,7 +2280,9 @@ class MainWindow(QMainWindow):
         apply_morning_action(task, action)
         from .project_roles import is_role_and_executor_task, settle_assignment
 
-        if is_role_and_executor_task(task):
+        from .project_roles import role_from_assignment as _role_from_assignment
+
+        if is_role_and_executor_task(task) or _role_from_assignment(task):
             settle_assignment(self.store, task)
         if action == ACTION_DONE and not was_done and task.is_done():
             self._advance_preset_chain(task)
@@ -2908,6 +2910,11 @@ class MainWindow(QMainWindow):
             role_from_assignment,
         )
 
+        if is_role_and_executor_task(task) or role_from_assignment(task):
+            from .project_roles import settle_assignment
+
+            if settle_assignment(self.store, task):
+                return True
         if is_role_and_executor_task(task):
             return self._claim_role_and_executor(task)
         role = role_from_assignment(task)
@@ -2917,12 +2924,16 @@ class MainWindow(QMainWindow):
         if not names:
             QMessageBox.warning(self, "Назначить роль", "Список исполнителей пуст.")
             return False
+        from .project_roles import pending_executor
+
+        current = pending_executor(task)
+        start = names.index(current) if current in names else 0
         person, ok = QInputDialog.getItem(
             self,
             "Назначить роль",
             f"Кто исполнитель роли «{role}» в проекте «{task.project}»?",
             names,
-            0,
+            start,
             False,
         )
         if not ok or not str(person).strip():
@@ -2936,14 +2947,11 @@ class MainWindow(QMainWindow):
         from .project_roles import PROJECT_LEAD, apply_executor_to_tasks, assign_executor
         from .roles import role_labels
 
+        from .project_roles import pending_executor, pending_role
+
         source = self.store.get(task.prev_id) if task.prev_id else None
-        if source is None or source.deleted:
-            QMessageBox.warning(
-                self,
-                "Назначить роль и исполнителя",
-                "Задача, для которой нужно назначение, не найдена.",
-            )
-            return False
+        if source is not None and getattr(source, "deleted", 0):
+            source = None
         names = self._executor_names()
         roles = [label for label in role_labels() if label != PROJECT_LEAD]
         if not names or not roles:
@@ -2953,16 +2961,25 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Назначить роль и исполнителя")
         dialog.resize(420, 220)
         box = QVBoxLayout(dialog)
-        box.addWidget(QLabel(f"Задача «{source.title}»"))
+        title = source.title if source is not None else (task.project or "проект")
+        box.addWidget(QLabel(f"Задача «{title}»"))
         box.addWidget(QLabel("Роль"))
         role_combo = QComboBox()
         for label in roles:
             role_combo.addItem(label, label)
+        wanted_role = pending_role(task)
+        role_index = role_combo.findData(wanted_role)
+        if role_index >= 0:
+            role_combo.setCurrentIndex(role_index)
         box.addWidget(role_combo)
         box.addWidget(QLabel("Исполнитель"))
         person_combo = QComboBox()
         for person in names:
             person_combo.addItem(person, person)
+        wanted_person = pending_executor(task)
+        person_index = person_combo.findData(wanted_person)
+        if person_index >= 0:
+            person_combo.setCurrentIndex(person_index)
         box.addWidget(person_combo)
         save = QPushButton("Назначить")
         save.clicked.connect(dialog.accept)
@@ -2973,10 +2990,11 @@ class MainWindow(QMainWindow):
         person = str(person_combo.currentData() or "").strip()
         if not role or not person:
             return False
-        source.role = role
-        source.executor = person
-        self.store.mark_changed(source)
-        project = (task.project or source.project or "").strip()
+        if source is not None and source.id != task.id:
+            source.role = role
+            source.executor = person
+            self.store.mark_changed(source)
+        project = (task.project or (source.project if source is not None else "") or "").strip()
         assign_executor(project, role, person)
         apply_executor_to_tasks(self.store, project, role, person)
         return True
@@ -3202,16 +3220,26 @@ class MainWindow(QMainWindow):
         from .projects import resolve_project_name
         from .tags import CONTROL_TAG, apply_control_tag, clear_inbox_tag
 
-        from .project_roles import is_role_and_executor_task, remember_executor, settle_assignment
+        from .project_roles import (
+            is_role_and_executor_task,
+            remember_executor,
+            role_from_assignment,
+            set_description_keep_choices,
+            settle_assignment,
+        )
 
         task.project = resolve_project_name(data["project"], self.store.tasks)
-        task.description = data["description"]
         task.author = data["author"]
         chosen_executor = str(data.get("executor") or "").strip()
-        if is_role_and_executor_task(task):
-            if chosen_executor and chosen_executor != (task.executor or "").strip():
+        keeps_choice = is_role_and_executor_task(task) or bool(role_from_assignment(task))
+        if keeps_choice:
+            set_description_keep_choices(task, data["description"])
+            if chosen_executor:
                 remember_executor(task, chosen_executor)
+            else:
+                remember_executor(task, "")
         else:
+            task.description = data["description"]
             task.executor = chosen_executor
         task.created_at = data["created_at"]
         task.completed_at = data["completed_at"]
@@ -3258,7 +3286,7 @@ class MainWindow(QMainWindow):
             for extra in bind_task_executor(self.store, task):
                 append_log("created", extra, detail="назначить роль", source="app")
                 self._note_task_change(extra, action="upsert")
-        if is_role_and_executor_task(task):
+        if keeps_choice:
             settle_assignment(self.store, task)
         self.request_save()
         if task.is_done() and not was_done:
