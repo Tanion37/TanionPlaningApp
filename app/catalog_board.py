@@ -19,6 +19,15 @@ from PyQt6.QtWidgets import (
 )
 
 from .preset_store import delete_preset, list_preset_names, rename_preset
+from .project_roles import (
+    PROJECT_LEAD,
+    apply_executor_to_tasks,
+    assign_executor,
+    executor_for,
+    forget_project,
+    rename_project as rename_project_roles,
+    roles_of_project,
+)
 from .projects import next_instance_name, preset_of_project, resolve_project_name
 from .theme import board_style
 
@@ -115,7 +124,7 @@ class CatalogCanvas(QWidget):
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("Новый проект")
-        dialog.resize(420, 180)
+        dialog.resize(420, 280)
         box = QVBoxLayout(dialog)
         box.addWidget(QLabel("Preset"))
         preset_combo = QComboBox()
@@ -125,21 +134,41 @@ class CatalogCanvas(QWidget):
         box.addWidget(QLabel("Название проекта"))
         name_edit = QLineEdit(next_instance_name(presets[0], self.main.store.tasks))
         box.addWidget(name_edit)
+        box.addWidget(QLabel(PROJECT_LEAD))
+        lead_combo = QComboBox()
+        lead_combo.addItem("", "")
+        for person in self.main._executor_names():
+            lead_combo.addItem(person, person)
+        box.addWidget(lead_combo)
 
         def _fill_name() -> None:
             preset = str(preset_combo.currentData() or "")
             name_edit.setText(next_instance_name(preset, self.main.store.tasks))
 
         preset_combo.currentIndexChanged.connect(lambda _index: _fill_name())
+
+        def _accept() -> None:
+            if not name_edit.text().strip() or not str(lead_combo.currentData() or "").strip():
+                QMessageBox.warning(
+                    dialog,
+                    "Проект",
+                    "Назначьте исполнителя на роль «Руководитель проекта». "
+                    "Без этого корневые задачи не уйдут во входящие.",
+                )
+                return
+            dialog.accept()
+
         save = QPushButton("Создать")
-        save.clicked.connect(dialog.accept)
+        save.clicked.connect(_accept)
         box.addWidget(save)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         preset = str(preset_combo.currentData() or "").strip()
         name = name_edit.text().strip()
-        if not preset or not name:
+        lead = str(lead_combo.currentData() or "").strip()
+        if not preset or not name or not lead:
             return
+        assign_executor(name, PROJECT_LEAD, lead)
         self.main.create_project_from_preset(name, preset)
 
     def _edit_project(self) -> None:
@@ -148,13 +177,27 @@ class CatalogCanvas(QWidget):
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("Править проект")
-        dialog.resize(420, 360)
+        dialog.resize(420, 520)
         box = QVBoxLayout(dialog)
         box.addWidget(QLabel("Название"))
         name_edit = QLineEdit(old)
         box.addWidget(name_edit)
         klass = preset_of_project(self.main.store.tasks, old)
         box.addWidget(QLabel(f"Preset: {klass}" if klass else "Preset: не задан"))
+        role_combos: dict[str, QComboBox] = {}
+        for role in roles_of_project(old, self.main.store.tasks):
+            box.addWidget(QLabel(role))
+            combo = QComboBox()
+            combo.addItem("", "")
+            current = executor_for(old, role)
+            for person in self.main._executor_names():
+                combo.addItem(person, person)
+            if current:
+                if combo.findData(current) < 0:
+                    combo.addItem(current, current)
+                combo.setCurrentIndex(combo.findData(current))
+            role_combos[role] = combo
+            box.addWidget(combo)
         box.addWidget(QLabel("Задачи проекта"))
         tasks = QListWidget()
         for task in self.main.store.tasks:
@@ -167,11 +210,18 @@ class CatalogCanvas(QWidget):
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         new = resolve_project_name(name_edit.text().strip(), self.main.store.tasks) or name_edit.text().strip()
-        if not new or new == old:
+        if not new:
             return
-        for task in self.main.store.tasks:
-            if (task.project or "").strip() == old:
-                task.project = new
+        if new != old:
+            for task in self.main.store.tasks:
+                if (task.project or "").strip() == old:
+                    task.project = new
+            rename_project_roles(old, new)
+        for role, combo in role_combos.items():
+            person = str(combo.currentData() or "").strip()
+            if person:
+                assign_executor(new, role, person)
+                apply_executor_to_tasks(self.main.store, new, role, person)
         self.main.request_save()
         self.main.reload_boards()
 
@@ -188,6 +238,7 @@ class CatalogCanvas(QWidget):
         for task in self.main.store.tasks:
             if (task.project or "").strip() == old:
                 task.project = new
+        rename_project_roles(old, new)
         self.main.request_save()
         self.main.reload_boards()
 
@@ -201,6 +252,7 @@ class CatalogCanvas(QWidget):
         for task in self.main.store.tasks:
             if (task.project or "").strip() == name:
                 task.project = ""
+        forget_project(name)
         self.main.request_save()
         self.main.reload_boards()
 

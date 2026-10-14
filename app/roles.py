@@ -8,6 +8,7 @@ from enum import Enum
 class StudioRole(Enum):
     STUDIO_HEAD = "Руководитель студии"
     STUDIO_COORDINATOR = "Координатор студии"
+    PROJECT_LEAD = "Руководитель проекта"
     MANAGER = "Менеджер"
     GAME_DESIGNER = "Геймдизайнер"
     ARTIST = "Художник/Дизайнер"

@@ -2100,6 +2100,8 @@ class MainWindow(QMainWindow):
                     task.remove_tag(DONE_TAG)
                     task.completed_at = None
                 else:
+                    if not self._claim_role_assignment(task):
+                        return
                     apply_status_tag(task, DONE_TAG)
                     log_action = "completed"
                     log_detail = ""
@@ -2264,6 +2266,8 @@ class MainWindow(QMainWindow):
         before_state = snapshot_dict(task)
         before_text = format_task_snapshot(task)
         was_done = task.is_done()
+        if action == ACTION_DONE and not was_done and not self._claim_role_assignment(task):
+            return
         apply_morning_action(task, action)
         if action == ACTION_DONE and not was_done and task.is_done():
             self._advance_preset_chain(task)
@@ -2392,6 +2396,9 @@ class MainWindow(QMainWindow):
     def _apply_action(self, task: Task, action_key: str) -> None:
         was_done = task.is_done()
         key = action_key
+        if key in {DONE_CHECK_ACTION, DONE_KEEP_ACTION, DONE_TAG} and not was_done:
+            if not self._claim_role_assignment(task):
+                return
         if key == TODAY_ACTION:
             if not self.demo_mode:
                 hide_task_on_day(task.id, hours=4)
@@ -2860,11 +2867,63 @@ class MainWindow(QMainWindow):
             return
         self.create_project_from_preset(name.strip(), dialog.saved_name)
 
+    def _ensure_project_lead(self, project: str) -> bool:
+        from .project_roles import PROJECT_LEAD, assign_executor, executor_for
+
+        project = (project or "").strip()
+        if not project:
+            return False
+        if executor_for(project, PROJECT_LEAD):
+            return True
+        names = self._executor_names()
+        if not names:
+            QMessageBox.warning(self, "Проект", "Нет исполнителей, чтобы назначить руководителя проекта.")
+            return False
+        person, ok = QInputDialog.getItem(
+            self,
+            "Руководитель проекта",
+            "Кто руководитель проекта? Без этого корневые задачи не уйдут во входящие.",
+            names,
+            0,
+            False,
+        )
+        if not ok or not str(person).strip():
+            return False
+        assign_executor(project, PROJECT_LEAD, str(person).strip())
+        return True
+
+    def _claim_role_assignment(self, task: Task) -> bool:
+        from .project_roles import apply_executor_to_tasks, assign_executor, role_from_assignment
+
+        role = role_from_assignment(task)
+        if not role:
+            return True
+        names = self._executor_names()
+        if not names:
+            QMessageBox.warning(self, "Назначить роль", "Список исполнителей пуст.")
+            return False
+        person, ok = QInputDialog.getItem(
+            self,
+            "Назначить роль",
+            f"Кто исполнитель роли «{role}» в проекте «{task.project}»?",
+            names,
+            0,
+            False,
+        )
+        if not ok or not str(person).strip():
+            return False
+        person = str(person).strip()
+        assign_executor(task.project, role, person)
+        apply_executor_to_tasks(self.store, task.project, role, person)
+        return True
+
     def create_project_from_preset(self, project: str, preset_name: str) -> None:
         from .preset_store import spawn_roots_inbox
 
         if self.demo_mode:
             QMessageBox.information(self, "ДЕМО", "В демо-режиме Preset отключён.")
+            return
+        if not self._ensure_project_lead(project):
             return
         created = spawn_roots_inbox(self.store, preset_name, project)
         if not created:
@@ -2980,6 +3039,18 @@ class MainWindow(QMainWindow):
                 data["tags"].insert(0, INBOX_TAG)
         elif day_screen and preset == PRESET_INBOX:
             data["start_at"] = date.today()
+        if chain_preset and int(chain_step if chain_step is not None else -1) >= 0:
+            project_name = str(data.get("project") or "").strip()
+            if not project_name:
+                QMessageBox.warning(
+                    self,
+                    "Проект",
+                    "Укажите проект. Корневая задача уйдёт во входящие только после назначения "
+                    "исполнителя на роль «Руководитель проекта».",
+                )
+                return
+            if not self._ensure_project_lead(project_name):
+                return
         data = apply_preset_to_new_task_data(data, preset)
         if preset and preset != PRESET_INBOX:
             data["tags"] = [t for t in data["tags"] if t != INBOX_TAG]
@@ -3011,6 +3082,11 @@ class MainWindow(QMainWindow):
                 task.completed_at = None
                 if not task.has_tag(_INBOX):
                     task.tags.insert(0, _INBOX)
+                from .project_roles import bind_task_executor
+
+                for extra in bind_task_executor(self.store, task):
+                    append_log("created", extra, detail="назначить роль", source="app")
+                    self._note_task_change(extra, action="upsert")
             if task.is_done() and task.completed_at is None:
                 task.completed_at = date.today()
             append_log("created", task, source="app", before_state=None)

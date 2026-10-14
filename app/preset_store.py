@@ -392,25 +392,31 @@ def _inbox_tags(raw: list) -> list[str]:
 
 def spawn_roots_inbox(store, preset_name: str, project: str = "") -> list:
     """Корни класса во входящих. project — имя экземпляра, одно на весь запуск."""
+    from .project_roles import PROJECT_LEAD, executor_for
+
     name = (preset_name or "").strip()
     instance = (project or "").strip()
+    if not instance or not executor_for(instance, PROJECT_LEAD):
+        return []
     steps = load_steps(name)
     created = []
     for index in root_indexes(steps):
         data = steps[index]
-        created.append(
-            store.add_task(
-                data["title"],
-                persist=False,
-                role=data.get("role") or "",
-                project=instance,
-                description=data.get("description") or "",
-                tags=_inbox_tags(list(data.get("tags") or [])),
-                preset_name=name,
-                preset_step=index,
-                source="preset",
-            )
+        task = store.add_task(
+            data["title"],
+            persist=False,
+            role=data.get("role") or "",
+            project=instance,
+            description=data.get("description") or "",
+            tags=_inbox_tags(list(data.get("tags") or [])),
+            preset_name=name,
+            preset_step=index,
+            source="preset",
         )
+        created.append(task)
+        from .project_roles import bind_task_executor
+
+        created.extend(bind_task_executor(store, task))
     return created
 
 
@@ -518,7 +524,10 @@ def spawn_linked_inbox(store, task: Task) -> list:
             if child.id not in parent.after_ids:
                 parent.after_ids.append(child.id)
                 parent.after_count = len(parent.after_ids)
+        from .project_roles import bind_task_executor
+
         created.append(child)
+        created.extend(bind_task_executor(store, child))
         run.append(child)
     return created
 
