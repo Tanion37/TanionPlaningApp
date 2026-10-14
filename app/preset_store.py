@@ -67,7 +67,7 @@ def _step_dict(task: Task) -> dict:
         "id": task.id,
         "title": (task.title or "").strip(),
         "role": task.role or "",
-        "project": task.project or "",
+        "project": "",
         "description": task.description or "",
         "tags": list(task.tags or []),
         "after": list(task.after_ids),
@@ -279,7 +279,6 @@ def rename_preset(old: str, new: str) -> str:
 def apply_step(task: Task, step: dict, *, preset_name: str, step_index: int) -> None:
     task.title = step["title"]
     task.role = step.get("role") or ""
-    task.project = step.get("project") or ""
     task.description = step.get("description") or ""
     task.tags = list(step.get("tags") or [])
     task.preset_name = preset_name
@@ -391,9 +390,10 @@ def _inbox_tags(raw: list) -> list[str]:
     return tags
 
 
-def spawn_roots_inbox(store, preset_name: str) -> list:
-    """Поставить корневые задачи пресета во входящие. Каждый запуск — новые карточки."""
+def spawn_roots_inbox(store, preset_name: str, project: str = "") -> list:
+    """Корни класса во входящих. project — имя экземпляра, одно на весь запуск."""
     name = (preset_name or "").strip()
+    instance = (project or "").strip()
     steps = load_steps(name)
     created = []
     for index in root_indexes(steps):
@@ -403,7 +403,7 @@ def spawn_roots_inbox(store, preset_name: str) -> list:
                 data["title"],
                 persist=False,
                 role=data.get("role") or "",
-                project=data.get("project") or "",
+                project=instance,
                 description=data.get("description") or "",
                 tags=_inbox_tags(list(data.get("tags") or [])),
                 preset_name=name,
@@ -506,7 +506,7 @@ def spawn_linked_inbox(store, task: Task) -> list:
             data["title"],
             persist=False,
             role=data.get("role") or "",
-            project=data.get("project") or "",
+            project=(task.project or "").strip(),
             description=data.get("description") or "",
             tags=_inbox_tags(list(data.get("tags") or [])),
             preset_name=name,

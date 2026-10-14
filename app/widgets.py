@@ -1234,6 +1234,7 @@ class NewTaskDialog(_EnterAcceptDialog):
 
         from .preset_store import list_preset_names
 
+        self._all_tasks = list(all_tasks or [])
         self._chain_preset = ""
         self._chain_step = -1
         self._chain_role = ""
@@ -1330,7 +1331,8 @@ class NewTaskDialog(_EnterAcceptDialog):
 
         hint = QLabel(
             "Обязательно только название. Несколько задач — названия через «;». "
-            "Пресет сверху задаёт теги и маршрут задачи. "
+            "Preset — образец цепочки, проект — её запуск. "
+            "Кнопки сверху задают теги и маршрут задачи. "
             "Время напоминания — если задано, бот пришлёт в Telegram."
         )
         hint.setWordWrap(True)
@@ -1341,8 +1343,22 @@ class NewTaskDialog(_EnterAcceptDialog):
 
     def _on_project_combo(self, _index: int) -> None:
         name = str(self.project_combo.currentData() or "")
-        if name:
-            self.project_edit.setText(name)
+        if not name:
+            return
+        self.project_edit.setText(name)
+        from .projects import preset_of_project
+
+        klass = preset_of_project(self._all_tasks, name)
+        if not klass:
+            return
+        self.file_preset.blockSignals(True)
+        index = self.file_preset.findData(klass)
+        if index >= 0:
+            self.file_preset.setCurrentIndex(index)
+        self.file_preset.blockSignals(False)
+        self._chain_preset = ""
+        self._chain_step = -1
+        self._chain_role = ""
 
     def _sync_project_combo(self, name: str) -> None:
         self.project_combo.blockSignals(True)
@@ -1368,9 +1384,13 @@ class NewTaskDialog(_EnterAcceptDialog):
         index = roots[0]
         step = steps[index]
         self.title_edit.setText(step.get("title") or "")
-        project = str(step.get("project") or "")
-        self.project_edit.setText(project)
-        self._sync_project_combo(project)
+        from .projects import next_instance_name, preset_of_project
+
+        current = self.project_edit.text().strip()
+        if not current or preset_of_project(self._all_tasks, current) not in ("", name):
+            current = next_instance_name(name, self._all_tasks)
+            self.project_edit.setText(current)
+        self._sync_project_combo(current)
         self.description_edit.setPlainText(step.get("description") or "")
         self.tag_picker.set_keys(list(step.get("tags") or []))
         self._chain_preset = name

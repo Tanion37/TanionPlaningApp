@@ -11,6 +11,7 @@ from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -2825,7 +2826,6 @@ class MainWindow(QMainWindow):
         self.reload_boards()
 
     def open_preset_window(self, preset_name: str | None = None) -> None:
-        from .preset_store import spawn_roots_inbox
         from .preset_window import PresetWindow
 
         if self.demo_mode:
@@ -2834,9 +2834,44 @@ class MainWindow(QMainWindow):
         dialog = PresetWindow(self, preset_name)
         if dialog.exec() != dialog.DialogCode.Accepted or not dialog.saved_name:
             return
-        created = spawn_roots_inbox(self.store, dialog.saved_name)
+        self.reload_boards()
+        already = any(
+            (task.preset_name or "") == dialog.saved_name and not task.deleted
+            for task in self.store.tasks
+        )
+        if already or preset_name:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Проект",
+            f"Создать проект по Preset «{dialog.saved_name}»?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        from .projects import next_instance_name
+
+        name, ok = QInputDialog.getText(
+            self,
+            "Проект",
+            "Название проекта",
+            text=next_instance_name(dialog.saved_name, self.store.tasks),
+        )
+        if not ok or not name.strip():
+            return
+        self.create_project_from_preset(name.strip(), dialog.saved_name)
+
+    def create_project_from_preset(self, project: str, preset_name: str) -> None:
+        from .preset_store import spawn_roots_inbox
+
+        if self.demo_mode:
+            QMessageBox.information(self, "ДЕМО", "В демо-режиме Preset отключён.")
+            return
+        created = spawn_roots_inbox(self.store, preset_name, project)
+        if not created:
+            QMessageBox.information(self, "Проект", "В этом Preset нет корневых задач.")
+            return
         for task in created:
-            append_log("created", task, detail="корень Preset", source="app")
+            append_log("created", task, detail="проект из Preset", source="app")
             self._note_task_change(task, action="upsert")
         self.request_save()
         self.reload_boards()
@@ -2955,6 +2990,13 @@ class MainWindow(QMainWindow):
                 payload.pop("pos_x", None)
                 payload.pop("pos_y", None)
             task = self.store.add_task(persist=False, **payload)
+            if not chain_preset and task.project and not task.preset_name:
+                from .projects import preset_of_project
+
+                task.preset_name = preset_of_project(
+                    [item for item in self.store.tasks if item.id != task.id],
+                    task.project,
+                )
             if i == 0 and chain_preset and int(chain_step if chain_step is not None else -1) >= 0:
                 from .tags import CANCEL_TAG as _CANCEL
                 from .tags import DONE_TAG as _DONE

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -17,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .preset_store import delete_preset, list_preset_names, rename_preset
-from .projects import resolve_project_name
+from .projects import next_instance_name, preset_of_project, resolve_project_name
 from .theme import board_style
 
 
@@ -44,12 +46,15 @@ class CatalogCanvas(QWidget):
         self.projects = QListWidget()
         box.addWidget(self.projects, 1)
         row = QHBoxLayout()
+        create = QPushButton("Новый")
         edit = QPushButton("Править")
         rename = QPushButton("Переименовать")
         remove = QPushButton("Удалить")
+        create.clicked.connect(self._new_project)
         edit.clicked.connect(self._edit_project)
         rename.clicked.connect(self._rename_project)
         remove.clicked.connect(self._delete_project)
+        row.addWidget(create)
         row.addWidget(edit)
         row.addWidget(rename)
         row.addWidget(remove)
@@ -80,8 +85,13 @@ class CatalogCanvas(QWidget):
 
     def rebuild(self) -> None:
         self.projects.clear()
+        tasks = self.main.store.tasks
         for name in self.main._project_names():
-            self.projects.addItem(name)
+            preset = preset_of_project(tasks, name)
+            label = f"{name} — {preset}" if preset else name
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.projects.addItem(item)
         self.presets.clear()
         for name in list_preset_names():
             self.presets.addItem(name)
@@ -89,11 +99,48 @@ class CatalogCanvas(QWidget):
 
     def _current_project(self) -> str:
         item = self.projects.currentItem()
-        return item.text().strip() if item else ""
+        if item is None:
+            return ""
+        stored = item.data(Qt.ItemDataRole.UserRole)
+        return str(stored or item.text()).strip()
 
     def _current_preset(self) -> str:
         item = self.presets.currentItem()
         return item.text().strip() if item else ""
+
+    def _new_project(self) -> None:
+        presets = list_preset_names()
+        if not presets:
+            QMessageBox.information(self, "Проект", "Сначала сохраните Preset. Проект — это его запуск.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Новый проект")
+        dialog.resize(420, 180)
+        box = QVBoxLayout(dialog)
+        box.addWidget(QLabel("Preset"))
+        preset_combo = QComboBox()
+        for name in presets:
+            preset_combo.addItem(name, name)
+        box.addWidget(preset_combo)
+        box.addWidget(QLabel("Название проекта"))
+        name_edit = QLineEdit(next_instance_name(presets[0], self.main.store.tasks))
+        box.addWidget(name_edit)
+
+        def _fill_name() -> None:
+            preset = str(preset_combo.currentData() or "")
+            name_edit.setText(next_instance_name(preset, self.main.store.tasks))
+
+        preset_combo.currentIndexChanged.connect(lambda _index: _fill_name())
+        save = QPushButton("Создать")
+        save.clicked.connect(dialog.accept)
+        box.addWidget(save)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        preset = str(preset_combo.currentData() or "").strip()
+        name = name_edit.text().strip()
+        if not preset or not name:
+            return
+        self.main.create_project_from_preset(name, preset)
 
     def _edit_project(self) -> None:
         old = self._current_project()
@@ -106,6 +153,8 @@ class CatalogCanvas(QWidget):
         box.addWidget(QLabel("Название"))
         name_edit = QLineEdit(old)
         box.addWidget(name_edit)
+        klass = preset_of_project(self.main.store.tasks, old)
+        box.addWidget(QLabel(f"Preset: {klass}" if klass else "Preset: не задан"))
         box.addWidget(QLabel("Задачи проекта"))
         tasks = QListWidget()
         for task in self.main.store.tasks:

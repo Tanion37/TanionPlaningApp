@@ -62,6 +62,32 @@ def unify_project_casing(tasks: list) -> int:
     return changed
 
 
+def preset_of_project(tasks: list, name: str | None) -> str:
+    """Класс (Preset) этого проекта. Пусто, если экземпляр ещё ни к чему не привязан."""
+    if not (name or "").strip():
+        return ""
+    for task in tasks or []:
+        if not same_project(getattr(task, "project", ""), name):
+            continue
+        preset = (getattr(task, "preset_name", "") or "").strip()
+        if preset:
+            return preset
+    return ""
+
+
+def next_instance_name(preset: str, tasks: list) -> str:
+    """Имя нового проекта по классу: само имя Preset, затем «Имя 2», «Имя 3»."""
+    base = (preset or "").strip() or "Проект"
+    taken = {project_key(getattr(task, "project", "")) for task in tasks or []}
+    taken.discard("")
+    if project_key(base) not in taken:
+        return base
+    number = 2
+    while project_key(f"{base} {number}") in taken:
+        number += 1
+    return f"{base} {number}"
+
+
 def projects_by_usage_frequency(tasks: list) -> list[str]:
     """Уникальные проекты (регистр не дублирует): чаще используемые слева."""
     mapping = canonical_project_map(tasks)

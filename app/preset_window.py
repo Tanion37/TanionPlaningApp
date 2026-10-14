@@ -44,6 +44,8 @@ class PresetWindow(QDialog):
         self._cols = 0
         if preset_name:
             self.tasks = tasks_from_steps(load_steps(preset_name))
+            for task in self.tasks:
+                task.project = ""
             self.saved_name = preset_name
 
         root = QVBoxLayout(self)
