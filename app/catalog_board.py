@@ -74,7 +74,7 @@ class CatalogCanvas(QWidget):
 
     def _presets_column(self) -> QWidget:
         box = QVBoxLayout()
-        box.addWidget(QLabel("Preset"))
+        box.addWidget(QLabel("Preset проекта"))
         self.presets = QListWidget()
         box.addWidget(self.presets, 1)
         row = QHBoxLayout()
@@ -126,7 +126,7 @@ class CatalogCanvas(QWidget):
         dialog.setWindowTitle("Новый проект")
         dialog.resize(420, 280)
         box = QVBoxLayout(dialog)
-        box.addWidget(QLabel("Preset"))
+        box.addWidget(QLabel("Preset проекта"))
         preset_combo = QComboBox()
         for name in presets:
             preset_combo.addItem(name, name)

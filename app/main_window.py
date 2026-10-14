@@ -10,9 +10,12 @@ from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QLineEdit,
     QMainWindow,
     QMessageBox,
@@ -1188,8 +1191,8 @@ class MainWindow(QMainWindow):
         self.btn_new_global.clicked.connect(self.new_task)
         controls_layout.addWidget(self.btn_new_global)
         self.btn_new_preset = CircleButton("", glyph="fork")
-        self.btn_new_preset.setToolTip("Новый Preset")
-        self.btn_new_preset.clicked.connect(self.open_preset_window)
+        self.btn_new_preset.setToolTip("Новый Preset проекта или новый проект")
+        self.btn_new_preset.clicked.connect(self._open_preset_menu)
         controls_layout.addWidget(self.btn_new_preset)
         self.btn_theme = CircleButton("◐")
         self.btn_theme.setToolTip("Тема: светлая или тёмная")
@@ -2842,30 +2845,12 @@ class MainWindow(QMainWindow):
         if dialog.exec() != dialog.DialogCode.Accepted or not dialog.saved_name:
             return
         self.reload_boards()
-        already = any(
-            (task.preset_name or "") == dialog.saved_name and not task.deleted
-            for task in self.store.tasks
-        )
-        if already or preset_name:
-            return
-        answer = QMessageBox.question(
-            self,
-            "Проект",
-            f"Создать проект по Preset «{dialog.saved_name}»?",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        from .projects import next_instance_name
 
-        name, ok = QInputDialog.getText(
-            self,
-            "Проект",
-            "Название проекта",
-            text=next_instance_name(dialog.saved_name, self.store.tasks),
-        )
-        if not ok or not name.strip():
-            return
-        self.create_project_from_preset(name.strip(), dialog.saved_name)
+    def _open_preset_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("Новый Preset Проекта", lambda: self.open_preset_window(None))
+        menu.addAction("Новый Проект", lambda: self.catalog_board._new_project())
+        menu.exec(self.btn_new_preset.mapToGlobal(QPoint(0, self.btn_new_preset.height())))
 
     def _ensure_project_lead(self, project: str) -> bool:
         from .project_roles import PROJECT_LEAD, assign_executor, executor_for
@@ -2893,8 +2878,15 @@ class MainWindow(QMainWindow):
         return True
 
     def _claim_role_assignment(self, task: Task) -> bool:
-        from .project_roles import apply_executor_to_tasks, assign_executor, role_from_assignment
+        from .project_roles import (
+            apply_executor_to_tasks,
+            assign_executor,
+            is_role_and_executor_task,
+            role_from_assignment,
+        )
 
+        if is_role_and_executor_task(task):
+            return self._claim_role_and_executor(task)
         role = role_from_assignment(task)
         if not role:
             return True
@@ -2915,6 +2907,55 @@ class MainWindow(QMainWindow):
         person = str(person).strip()
         assign_executor(task.project, role, person)
         apply_executor_to_tasks(self.store, task.project, role, person)
+        return True
+
+    def _claim_role_and_executor(self, task: Task) -> bool:
+        from .project_roles import PROJECT_LEAD, apply_executor_to_tasks, assign_executor
+        from .roles import role_labels
+
+        source = self.store.get(task.prev_id) if task.prev_id else None
+        if source is None or source.deleted:
+            QMessageBox.warning(
+                self,
+                "Назначить роль и исполнителя",
+                "Задача, для которой нужно назначение, не найдена.",
+            )
+            return False
+        names = self._executor_names()
+        roles = [label for label in role_labels() if label != PROJECT_LEAD]
+        if not names or not roles:
+            QMessageBox.warning(self, "Назначить роль и исполнителя", "Нет ролей или исполнителей.")
+            return False
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Назначить роль и исполнителя")
+        dialog.resize(420, 220)
+        box = QVBoxLayout(dialog)
+        box.addWidget(QLabel(f"Задача «{source.title}»"))
+        box.addWidget(QLabel("Роль"))
+        role_combo = QComboBox()
+        for label in roles:
+            role_combo.addItem(label, label)
+        box.addWidget(role_combo)
+        box.addWidget(QLabel("Исполнитель"))
+        person_combo = QComboBox()
+        for person in names:
+            person_combo.addItem(person, person)
+        box.addWidget(person_combo)
+        save = QPushButton("Назначить")
+        save.clicked.connect(dialog.accept)
+        box.addWidget(save)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        role = str(role_combo.currentData() or "").strip()
+        person = str(person_combo.currentData() or "").strip()
+        if not role or not person:
+            return False
+        source.role = role
+        source.executor = person
+        self.store.mark_changed(source)
+        project = (task.project or source.project or "").strip()
+        assign_executor(project, role, person)
+        apply_executor_to_tasks(self.store, project, role, person)
         return True
 
     def create_project_from_preset(self, project: str, preset_name: str) -> None:
@@ -3087,6 +3128,12 @@ class MainWindow(QMainWindow):
                 for extra in bind_task_executor(self.store, task):
                     append_log("created", extra, detail="назначить роль", source="app")
                     self._note_task_change(extra, action="upsert")
+            elif (task.project or "").strip() and not (task.role or "").strip():
+                from .project_roles import bind_task_executor
+
+                for extra in bind_task_executor(self.store, task):
+                    append_log("created", extra, detail="назначить роль", source="app")
+                    self._note_task_change(extra, action="upsert")
             if task.is_done() and task.completed_at is None:
                 task.completed_at = date.today()
             append_log("created", task, source="app", before_state=None)
@@ -3171,6 +3218,12 @@ class MainWindow(QMainWindow):
             task.remove_tag(DONE_TAG)
             if CANCEL_TAG not in task.tags:
                 task.tags.append(CANCEL_TAG)
+        if (task.project or "").strip() and not (task.role or "").strip():
+            from .project_roles import bind_task_executor
+
+            for extra in bind_task_executor(self.store, task):
+                append_log("created", extra, detail="назначить роль", source="app")
+                self._note_task_change(extra, action="upsert")
         self.request_save()
         if task.is_done() and not was_done:
             self._advance_preset_chain(task)

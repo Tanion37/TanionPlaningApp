@@ -35,7 +35,7 @@ from .widgets import TASK_W, TaskBlock
 class PresetWindow(QDialog):
     def __init__(self, parent=None, preset_name: str | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Новый Preset")
+        self.setWindowTitle("Preset проекта" if preset_name else "Новый Preset Проекта")
         self.resize(720, 640)
         self.saved_name = ""
         self.tasks: list[Task] = []
@@ -226,11 +226,11 @@ class PresetWindow(QDialog):
     def _save(self) -> None:
         named = [task for task in self.tasks if (task.title or "").strip()]
         if not named:
-            QMessageBox.information(self, "Новый Preset", "Создайте хотя бы одну задачу.")
+            QMessageBox.information(self, "Новый Preset Проекта", "Создайте хотя бы одну задачу.")
             return
         name, ok = QInputDialog.getText(
             self,
-            "Сохранить Preset",
+            "Сохранить Preset проекта",
             "Название",
             text=self.saved_name or "",
         )
@@ -244,7 +244,7 @@ class PresetWindow(QDialog):
         except (OSError, TimeoutError) as exc:
             QMessageBox.warning(
                 self,
-                "Сохранить Preset",
+                "Сохранить Preset проекта",
                 f"Не удалось записать лист presets в tasks.xlsx.\n{exc}",
             )
             return

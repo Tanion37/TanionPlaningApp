@@ -300,14 +300,19 @@ def rank_signature(sections: list[tuple[str, list[Task]]]) -> tuple:
     return tuple((tag, len(tasks)) for tag, tasks in sections)
 
 
-def executor_sections(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
-    """Разделы ДЕНЬ по исполнителям, кроме Юры / пустого."""
+def executor_sections(tasks: Iterable[Task], today: date | None = None) -> list[tuple[str, list[Task]]]:
+    """Разделы ДЕНЬ по исполнителям, кроме Юры / пустого. Входящие тоже остаются на экране."""
+    today = today or date.today()
     by_name: dict[str, list[Task]] = {}
     for task in tasks:
-        if task.is_hidden_from_boards() or not task.is_actual():
+        if task.is_hidden_from_boards() or task.is_backlog():
             continue
         name = (getattr(task, "executor", None) or "").strip()
         if is_own_executor(name):
+            continue
+        start_ok = task.start_at is None or task.start_at <= today
+        on_day = task.is_actual() or ((task.is_inbox() or task.is_control()) and start_ok)
+        if not on_day:
             continue
         by_name.setdefault(name, []).append(task)
     items = sorted(by_name.items(), key=lambda item: item[0].casefold())

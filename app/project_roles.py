@@ -11,6 +11,7 @@ from .tags import INBOX_TAG
 
 PROJECT_LEAD = StudioRole.PROJECT_LEAD.value
 ASSIGN_PREFIX = "Назначить роль «"
+ASSIGN_BOTH = "Назначить роль и исполнителя"
 SHEET_NAME = "project_roles"
 _HEADERS = ("проект", "роль", "исполнитель")
 
@@ -24,6 +25,10 @@ def role_from_assignment(task: Task) -> str:
     if not title.startswith(ASSIGN_PREFIX) or not title.endswith("»"):
         return ""
     return title[len(ASSIGN_PREFIX) : -1].strip()
+
+
+def is_role_and_executor_task(task: Task) -> bool:
+    return (getattr(task, "title", "") or "").strip() == ASSIGN_BOTH
 
 
 def _path(path: Path | None) -> Path:
@@ -207,12 +212,39 @@ def _open_assignment(store, project: str, role: str) -> Task | None:
     return None
 
 
+def _open_both_assignment(store, source: Task) -> Task | None:
+    for task in store.tasks:
+        if getattr(task, "deleted", 0) or task.is_done() or task.is_cancelled():
+            continue
+        if not is_role_and_executor_task(task):
+            continue
+        if (task.prev_id or "") == source.id:
+            return task
+    return None
+
+
 def bind_task_executor(store, task: Task, path: Path | None = None) -> list[Task]:
-    """Поставить исполнителя роли. Если роли нет в проекте — задача руководителю."""
+    """Поставить исполнителя роли. Если роли нет — руководитель назначает роль и исполнителя."""
     role = (task.role or "").strip()
     project = (task.project or "").strip()
-    if not role or not project:
+    if not project:
         return []
+    if not role:
+        lead = executor_for(project, PROJECT_LEAD, path)
+        if not lead or _open_both_assignment(store, task) is not None:
+            return []
+        created = store.add_task(
+            ASSIGN_BOTH,
+            persist=False,
+            executor=lead,
+            role=PROJECT_LEAD,
+            project=project,
+            description=f"У задачи «{task.title}» в проекте «{project}» не выбраны роль и исполнитель.",
+            tags=[INBOX_TAG],
+            prev_id=task.id,
+            source="app",
+        )
+        return [created]
     person = executor_for(project, role, path)
     if person:
         task.executor = person

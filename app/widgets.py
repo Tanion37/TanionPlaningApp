@@ -1247,7 +1247,7 @@ class NewTaskDialog(_EnterAcceptDialog):
             self.project_combo.addItem(name, name)
         self.project_combo.currentIndexChanged.connect(self._on_project_combo)
         catalog.addWidget(self.project_combo, 1)
-        catalog.addWidget(QLabel("Preset"))
+        catalog.addWidget(QLabel("Preset проекта"))
         self.file_preset = QComboBox()
         self.file_preset.addItem("", "")
         for name in list_preset_names():
