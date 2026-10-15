@@ -75,10 +75,23 @@ def preset_of_project(tasks: list, name: str | None) -> str:
     return ""
 
 
-def next_instance_name(preset: str, tasks: list) -> str:
+def project_name_taken(name: str | None, tasks: list) -> bool:
+    """Такое название уже встречается у задачи. Регистр не делает имя новым."""
+    raw = (name or "").strip()
+    if not raw:
+        return False
+    for task in tasks or []:
+        if same_project(getattr(task, "project", ""), raw):
+            return True
+    return False
+
+
+def next_instance_name(preset: str, tasks: list, extra: object = ()) -> str:
     """Имя нового проекта по классу: само имя Preset, затем «Имя 2», «Имя 3»."""
     base = (preset or "").strip() or "Проект"
     taken = {project_key(getattr(task, "project", "")) for task in tasks or []}
+    for name in extra or ():
+        taken.add(project_key(str(name)))
     taken.discard("")
     if project_key(base) not in taken:
         return base

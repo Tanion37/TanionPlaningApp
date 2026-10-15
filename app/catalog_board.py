@@ -18,17 +18,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .preset_store import delete_preset, list_preset_names, rename_preset
+from .preset_store import delete_preset, list_preset_names, load_steps, rename_preset, root_indexes
 from .project_roles import (
     PROJECT_LEAD,
     apply_executor_to_tasks,
     assign_executor,
     executor_for,
     forget_project,
+    load_assignments,
     rename_project as rename_project_roles,
     roles_of_project,
 )
-from .projects import next_instance_name, preset_of_project, resolve_project_name
+from .projects import next_instance_name, preset_of_project, project_name_taken, resolve_project_name, same_project
 from .theme import board_style
 
 
@@ -132,7 +133,10 @@ class CatalogCanvas(QWidget):
             preset_combo.addItem(name, name)
         box.addWidget(preset_combo)
         box.addWidget(QLabel("Название проекта"))
-        name_edit = QLineEdit(next_instance_name(presets[0], self.main.store.tasks))
+        def _free_name(preset: str) -> str:
+            return next_instance_name(preset, self.main.store.tasks, load_assignments())
+
+        name_edit = QLineEdit(_free_name(presets[0]))
         box.addWidget(name_edit)
         box.addWidget(QLabel(PROJECT_LEAD))
         lead_combo = QComboBox()
@@ -143,18 +147,41 @@ class CatalogCanvas(QWidget):
 
         def _fill_name() -> None:
             preset = str(preset_combo.currentData() or "")
-            name_edit.setText(next_instance_name(preset, self.main.store.tasks))
+            name_edit.setText(_free_name(preset))
 
         preset_combo.currentIndexChanged.connect(lambda _index: _fill_name())
 
+        def _name_exists(name: str) -> bool:
+            if project_name_taken(name, self.main.store.tasks):
+                return True
+            for existing in load_assignments():
+                if same_project(existing, name):
+                    return True
+            return False
+
         def _accept() -> None:
-            if not name_edit.text().strip() or not str(lead_combo.currentData() or "").strip():
+            preset = str(preset_combo.currentData() or "").strip()
+            name = name_edit.text().strip()
+            lead = str(lead_combo.currentData() or "").strip()
+            if not preset:
+                QMessageBox.warning(dialog, "Проект", "Выберите Preset проекта.")
+                return
+            if not name:
+                QMessageBox.warning(dialog, "Проект", "Укажите название проекта.")
+                return
+            if _name_exists(name):
+                QMessageBox.warning(dialog, "Проект", "Название проекта уже существует.")
+                return
+            if not lead:
                 QMessageBox.warning(
                     dialog,
                     "Проект",
                     "Назначьте исполнителя на роль «Руководитель проекта». "
                     "Без этого корневые задачи не уйдут во входящие.",
                 )
+                return
+            if not root_indexes(load_steps(preset)):
+                QMessageBox.warning(dialog, "Проект", "В этом Preset нет корневых задач.")
                 return
             dialog.accept()
 
