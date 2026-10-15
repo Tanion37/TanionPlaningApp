@@ -50,6 +50,7 @@ class TaskBlock(QWidget):
     project_clicked = pyqtSignal(str)  # project name
     clicked = pyqtSignal(str)  # task_id
     role_changed = pyqtSignal(str, str)  # task_id, role
+    executor_changed = pyqtSignal(str, str)  # task_id, исполнитель назначения
     add_linked = pyqtSignal(str, str, object)  # task_id, имя, тексты остальных полей
 
     PROJECT_BAND = 16
@@ -60,11 +61,13 @@ class TaskBlock(QWidget):
         parent: QWidget | None = None,
         *,
         show_role: bool = False,
+        executor_names: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         from .project_roles import is_role_and_executor_task
 
         self.task = task
+        self._executor_names = list(executor_names or [])
         self._role_assignment = is_role_and_executor_task(task)
         self.show_role = show_role or self._role_assignment
         self._marked = False
@@ -102,10 +105,21 @@ class TaskBlock(QWidget):
             self._role.currentIndexChanged.connect(self._on_role)
             self._role.installEventFilter(self)
 
-        self._choice: QLabel | None = None
+        self._person: QComboBox | None = None
         if self._role_assignment:
-            self._choice = QLabel(self)
-            self._choice.setFont(QFont("Segoe UI", 8))
+            self._person = QComboBox(self)
+            self._person.setFont(QFont("Segoe UI", 8))
+            self._person.setToolTip("Исполнитель")
+            self._person.addItem("исполнитель", "")
+            names = self._executor_names
+            if not names:
+                from .executors_store import ExecutorsStore
+
+                names = ExecutorsStore().load()
+            for name in names:
+                self._person.addItem(name, name)
+            self._person.currentIndexChanged.connect(self._on_person)
+            self._person.installEventFilter(self)
 
         self._plus_btn = QPushButton("+", self)
         self._plus_btn.setFont(QFont("Segoe UI", 8))
@@ -136,17 +150,10 @@ class TaskBlock(QWidget):
             y += 2
             self._role.setGeometry(4, y, TASK_W - 8, 22)
             y += 24
-        if getattr(self, "_choice", None) is not None:
-            from .project_roles import pending_executor
-
-            person = pending_executor(self.task)
-            if person:
-                self._choice.show()
-                self._choice.setText(f"Исполнитель: {person}")
-                self._choice.setGeometry(4, y, TASK_W - 8, 18)
-                y += 20
-            else:
-                self._choice.hide()
+        if getattr(self, "_person", None) is not None:
+            y += 2
+            self._person.setGeometry(4, y, TASK_W - 8, 22)
+            y += 24
         for row in self._rows:
             row["edit"].setGeometry(4, y, TASK_W - 8, 22)
             y += 24
@@ -174,6 +181,16 @@ class TaskBlock(QWidget):
             index = self._role.findData(role)
             self._role.setCurrentIndex(index if index >= 0 else 0)
             self._role.blockSignals(False)
+        if getattr(self, "_person", None) is not None:
+            from .project_roles import pending_executor
+
+            person = pending_executor(self.task)
+            if person and self._person.findData(person) < 0:
+                self._person.addItem(person, person)
+            self._person.blockSignals(True)
+            index = self._person.findData(person)
+            self._person.setCurrentIndex(index if index >= 0 else 0)
+            self._person.blockSignals(False)
         self._layout_chrome()
 
     def set_marked(self, on: bool) -> None:
@@ -198,6 +215,16 @@ class TaskBlock(QWidget):
         if role == current:
             return
         self.role_changed.emit(self.task.id, role)
+
+    def _on_person(self, _index: int) -> None:
+        if self._person is None:
+            return
+        person = str(self._person.currentData() or "").strip()
+        from .project_roles import pending_executor
+
+        if person == pending_executor(self.task):
+            return
+        self.executor_changed.emit(self.task.id, person)
 
     def _add_row(self) -> None:
         row = self._append_row("")
@@ -254,7 +281,8 @@ class TaskBlock(QWidget):
         self.add_linked.emit(self.task.id, title, others)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if self._role is not None and watched is self._role and event.type() == QEvent.Type.Wheel:
+        watched_combo = watched is self._role or watched is getattr(self, "_person", None)
+        if watched_combo and event.type() == QEvent.Type.Wheel:
             event.ignore()
             return True
         return super().eventFilter(watched, event)
@@ -1531,11 +1559,20 @@ class EditTaskDialog(_EnterAcceptDialog):
             description_without_choices,
             is_role_and_executor_task,
             pending_executor,
+            pending_role,
             role_from_assignment,
         )
 
-        self._keeps_executor = is_role_and_executor_task(task) or bool(role_from_assignment(task))
-        shown_description = description_without_choices(task) if self._keeps_executor else (task.description or "")
+        self._assign_both = is_role_and_executor_task(task)
+        self._keeps_executor = self._assign_both or bool(role_from_assignment(task))
+        if self._assign_both:
+            shown_description = task.description or ""
+        elif self._keeps_executor:
+            shown_description = description_without_choices(task)
+        else:
+            shown_description = task.description or ""
+        self._pending_role = pending_role(task)
+        self._pending_person = pending_executor(task)
         self.description_edit = QPlainTextEdit(shown_description)
         self.description_edit.setPlaceholderText("Расширенное описание")
         self.description_edit.setMinimumHeight(140)
@@ -1545,16 +1582,22 @@ class EditTaskDialog(_EnterAcceptDialog):
         form.addRow("Кто поставил", self.author)
 
         names = list(executor_names or [])
-        if self._keeps_executor:
-            current = pending_executor(task)
+        if self._assign_both:
+            current = getattr(task, "executor", "") or ""
+        elif self._keeps_executor:
+            current = self._pending_person
         else:
             current = getattr(task, "executor", "") or ""
         if current and current not in names:
             names = [current, *names]
         self.executor = QLineEdit(current)
         self.executor.setPlaceholderText("необязательно")
+        if self._assign_both:
+            self.executor.setReadOnly(True)
+            self.executor.setToolTip("Эту задачу выполняет руководитель проекта.")
         form.addRow("Исполнитель", self.executor)
-        form.addRow("", _chip_buttons_row(self.executor, names))
+        if not self._assign_both:
+            form.addRow("", _chip_buttons_row(self.executor, names))
 
         self.created = _make_clearable_date(task.created_at)
         form.addRow("Дата постановки", self.created)
@@ -1596,6 +1639,39 @@ class EditTaskDialog(_EnterAcceptDialog):
 
         root.addLayout(form)
 
+        self._assign_role: QComboBox | None = None
+        self._assign_person: QComboBox | None = None
+        if self._assign_both:
+            from .project_roles import PROJECT_LEAD
+            from .roles import role_labels
+
+            assign = QWidget()
+            assign_form = QFormLayout(assign)
+            assign_form.setContentsMargins(0, 0, 0, 0)
+            self._assign_role = QComboBox()
+            self._assign_role.addItem("роль", "")
+            for label in role_labels():
+                if label != PROJECT_LEAD:
+                    self._assign_role.addItem(label, label)
+            role_index = self._assign_role.findData(self._pending_role)
+            if role_index >= 0:
+                self._assign_role.setCurrentIndex(role_index)
+            self._assign_person = QComboBox()
+            self._assign_person.addItem("исполнитель", "")
+            for person_name in names:
+                self._assign_person.addItem(person_name, person_name)
+            if self._pending_person and self._assign_person.findData(self._pending_person) < 0:
+                self._assign_person.addItem(self._pending_person, self._pending_person)
+            person_index = self._assign_person.findData(self._pending_person)
+            if person_index >= 0:
+                self._assign_person.setCurrentIndex(person_index)
+            assign_form.addRow("Роль", self._assign_role)
+            assign_form.addRow("Исполнитель", self._assign_person)
+            self._assign_role.currentIndexChanged.connect(self._sync_assignment_text)
+            self._assign_person.currentIndexChanged.connect(self._sync_assignment_text)
+            root.addWidget(assign)
+            self._sync_assignment_text()
+
         self.tag_picker = TagIconsPicker(
             list(task.tags), self, all_tasks=all_tasks, icon_size=TAG_ICON
         )
@@ -1603,6 +1679,17 @@ class EditTaskDialog(_EnterAcceptDialog):
 
         root.addWidget(_ok_left_button_box(self._try_accept, self.reject))
         self._install_enter_accept()
+
+    def _sync_assignment_text(self, _index: int = 0) -> None:
+        if self._assign_role is None or self._assign_person is None:
+            return
+        from .project_roles import description_with_choices
+
+        role = str(self._assign_role.currentData() or "")
+        person = str(self._assign_person.currentData() or "")
+        self.description_edit.setPlainText(
+            description_with_choices(self.description_edit.toPlainText(), role, person)
+        )
 
     def _on_preset(self, name: str) -> None:
         from .create_presets import tags_for_preset
@@ -1640,4 +1727,6 @@ class EditTaskDialog(_EnterAcceptDialog):
             "remind_period": self.period.currentText(),
             "tags": self.tag_picker.selected_keys(),
             "create_preset": self._create_preset,
+            "assign_role": str(self._assign_role.currentData() or "") if self._assign_role else "",
+            "assign_executor": str(self._assign_person.currentData() or "") if self._assign_person else "",
         }

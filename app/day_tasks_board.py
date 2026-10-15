@@ -377,13 +377,14 @@ class DayTasksCanvas(QWidget):
             child.deleteLater()
 
     def _make_block(self, task: Task) -> TaskBlock:
-        block = TaskBlock(task, self)
+        block = TaskBlock(task, self, executor_names=self.main._executor_names())
         block.dropped_on_tag.connect(lambda tid, key: self.main.apply_action_to_task(tid, key))
         block.tag_dropped.connect(lambda tid, key: self.main.apply_action_to_task(tid, key))
         block.double_clicked.connect(self.main.edit_task)
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
+        block.executor_changed.connect(self.main.on_assignment_executor)
         block.add_linked.connect(self.main.on_task_add_linked)
         from .task_graph import linked_task_title
 

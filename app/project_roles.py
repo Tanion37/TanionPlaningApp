@@ -31,69 +31,107 @@ def is_role_and_executor_task(task: Task) -> bool:
     return (getattr(task, "title", "") or "").strip() == ASSIGN_BOTH
 
 
-def _meta(task: Task, key: str) -> str:
-    prefix = f"{key}: "
+_ROLE_KEYS = ("Роль", "роль")
+_EXECUTOR_KEYS = ("Исполнитель", "исполнитель")
+
+
+def _meta_any(task: Task, keys: tuple[str, ...]) -> str:
     for line in (getattr(task, "description", "") or "").splitlines():
-        if line.startswith(prefix):
-            return line[len(prefix) :].strip()
+        for key in keys:
+            prefix = f"{key}:"
+            if line.startswith(prefix):
+                return line[len(prefix) :].strip()
     return ""
 
 
-def _set_meta(task: Task, key: str, value: str) -> None:
-    prefix = f"{key}: "
-    lines = [
-        line
-        for line in (getattr(task, "description", "") or "").splitlines()
-        if not line.startswith(prefix)
-    ]
-    text = (value or "").strip()
-    if text:
-        lines.append(prefix + text)
-    task.description = "\n".join(lines).strip()
+def _is_choice_line(line: str) -> bool:
+    for key in (*_ROLE_KEYS, *_EXECUTOR_KEYS):
+        if line.startswith(f"{key}:"):
+            return True
+    return False
 
 
-def description_without_choices(task: Task) -> str:
-    """Текст задачи без служебных строк выбора роли и исполнителя."""
-    lines = []
-    for line in (getattr(task, "description", "") or "").splitlines():
-        if line.startswith("роль: ") or line.startswith("исполнитель: "):
-            continue
-        lines.append(line)
+def strip_choice_lines(text: str) -> str:
+    lines = [line for line in (text or "").splitlines() if not _is_choice_line(line)]
     return "\n".join(lines).strip()
 
 
-def set_description_keep_choices(task: Task, text: str) -> None:
-    role = pending_role(task)
-    person = pending_executor(task)
-    task.description = (text or "").strip()
+def description_with_choices(text: str, role: str, person: str) -> str:
+    """Текст задачи и строки «Роль: …» / «Исполнитель: …» в конце."""
+    base = strip_choice_lines(text)
+    choice: list[str] = []
+    role = (role or "").strip()
+    person = (person or "").strip()
     if role:
-        _set_meta(task, "роль", role)
+        choice.append(f"Роль: {role}")
     if person:
-        _set_meta(task, "исполнитель", person)
+        choice.append(f"Исполнитель: {person}")
+    parts = [part for part in (base, "\n".join(choice)) if part]
+    return "\n\n".join(parts).strip()
+
+
+def description_without_choices(task: Task) -> str:
+    """Текст задачи без строк «Роль:» и «Исполнитель:»."""
+    return strip_choice_lines(getattr(task, "description", "") or "")
+
+
+def _write_choices(task: Task, role: str, person: str) -> None:
+    task.description = description_with_choices(getattr(task, "description", "") or "", role, person)
+
+
+def set_description_keep_choices(
+    task: Task,
+    text: str,
+    role: str | None = None,
+    person: str | None = None,
+) -> None:
+    if role is None:
+        role = pending_role(task)
+    if person is None:
+        person = pending_executor(task)
+    task.description = text or ""
+    _write_choices(task, role, person)
 
 
 def pending_role(task: Task) -> str:
-    return _meta(task, "роль")
+    return _meta_any(task, _ROLE_KEYS)
 
 
 def pending_executor(task: Task) -> str:
-    return _meta(task, "исполнитель")
+    return _meta_any(task, _EXECUTOR_KEYS)
+
+
+def _choices_are_canonical(task: Task, role: str, person: str) -> bool:
+    current = getattr(task, "description", "") or ""
+    return current == description_with_choices(current, role, person)
 
 
 def remember_role(task: Task, role: str) -> bool:
     role = (role or "").strip()
-    if pending_role(task) == role:
+    person = pending_executor(task)
+    if pending_role(task) == role and _choices_are_canonical(task, role, person):
         return False
-    _set_meta(task, "роль", role)
+    _write_choices(task, role, person)
     return True
 
 
 def remember_executor(task: Task, executor: str) -> bool:
     executor = (executor or "").strip()
-    if pending_executor(task) == executor:
+    role = pending_role(task)
+    if pending_executor(task) == executor and _choices_are_canonical(task, role, executor):
         return False
-    _set_meta(task, "исполнитель", executor)
+    _write_choices(task, role, executor)
     return True
+
+
+def pin_assignment_lead(store, task: Task) -> None:
+    """Карточку «Назначить роль и исполнителя» держит руководитель проекта."""
+    if not is_role_and_executor_task(task):
+        return
+    task.role = PROJECT_LEAD
+    lead = executor_for(getattr(task, "project", ""), PROJECT_LEAD, getattr(store, "path", None))
+    if lead:
+        task.executor = lead
 
 
 def hold_executor_without_role(store, task: Task, person: str) -> bool | None:
@@ -124,9 +162,15 @@ def hold_executor_without_role(store, task: Task, person: str) -> bool | None:
         return changed
     bind_task_executor(store, task, getattr(store, "path", None))
     card = _open_both_assignment(store, task)
-    if card is not None and remember_executor(card, person):
-        changed = True
-        if hasattr(store, "mark_changed"):
+    if card is not None:
+        if remember_executor(card, person):
+            changed = True
+        before_executor = (card.executor or "").strip()
+        before_role = (card.role or "").strip()
+        pin_assignment_lead(store, card)
+        if (card.executor or "").strip() != before_executor or (card.role or "").strip() != before_role:
+            changed = True
+        if changed and hasattr(store, "mark_changed"):
             store.mark_changed(card)
     if not is_own_executor(getattr(task, "executor", "")):
         task.executor = ""
@@ -170,6 +214,7 @@ def _finish_assignment(store, task: Task, role: str, person: str, path: Path | N
 def settle_assignment(store, task: Task, path: Path | None = None) -> bool:
     """Когда выбор полный — записать его и сдать карточку в выполненные."""
     if is_role_and_executor_task(task):
+        pin_assignment_lead(store, task)
         role = pending_role(task)
         person = pending_executor(task)
     else:

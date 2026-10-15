@@ -137,7 +137,19 @@ def apply_executor_assignment(task: Task, executor: str, store=None) -> bool:
     name = (executor or "").strip()
     if not name:
         return False
-    if is_role_and_executor_task(task) or role_from_assignment(task):
+    if is_role_and_executor_task(task):
+        if store is None:
+            return False
+        from .project_roles import pin_assignment_lead
+
+        before_executor = (getattr(task, "executor", "") or "").strip()
+        before_role = (getattr(task, "role", "") or "").strip()
+        pin_assignment_lead(store, task)
+        return (
+            (getattr(task, "executor", "") or "").strip() != before_executor
+            or (getattr(task, "role", "") or "").strip() != before_role
+        )
+    if role_from_assignment(task):
         return remember_executor(task, name)
     held = hold_executor_without_role(store, task, name)
     if held is not None:

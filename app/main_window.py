@@ -892,7 +892,7 @@ class BoardCanvas(QWidget):
         self.main._sync_history_buttons()
 
     def _make_block(self, task: Task) -> TaskBlock:
-        block = TaskBlock(task, self)
+        block = TaskBlock(task, self, executor_names=self.main._executor_names())
         block.moved.connect(self._on_moved)
         block.dropped_on_tag.connect(self._on_tag_drop)
         block.tag_dropped.connect(self._on_tag_drop)
@@ -900,6 +900,7 @@ class BoardCanvas(QWidget):
         block.project_clicked.connect(self.main.on_project_filter)
         block.clicked.connect(self.main.on_task_clicked)
         block.role_changed.connect(self.main.on_task_role)
+        block.executor_changed.connect(self.main.on_assignment_executor)
         block.add_linked.connect(self.main.on_task_add_linked)
         from .task_graph import linked_task_title
 
@@ -2483,9 +2484,11 @@ class MainWindow(QMainWindow):
         from .project_roles import is_role_and_executor_task, remember_role, settle_assignment
 
         if is_role_and_executor_task(task):
+            from .project_roles import pin_assignment_lead
+
             role = coerce_role(role)
-            if not remember_role(task, role) and not settle_assignment(self.store, task):
-                return
+            remember_role(task, role)
+            pin_assignment_lead(self.store, task)
             settle_assignment(self.store, task)
             if not self.demo_mode:
                 self.request_save()
@@ -2512,6 +2515,28 @@ class MainWindow(QMainWindow):
             before_state=before_state,
         )
         self.request_save()
+        self._last_paint_key = None
+        self.reload_boards()
+        self._sync_history_buttons()
+
+    def on_assignment_executor(self, task_id: str, name: str) -> None:
+        task = self._find_task(task_id)
+        if task is None:
+            return
+        from .project_roles import (
+            is_role_and_executor_task,
+            pin_assignment_lead,
+            remember_executor,
+            settle_assignment,
+        )
+
+        if not is_role_and_executor_task(task):
+            return
+        remember_executor(task, name)
+        pin_assignment_lead(self.store, task)
+        settle_assignment(self.store, task)
+        if not self.demo_mode:
+            self.request_save()
         self._last_paint_key = None
         self.reload_boards()
         self._sync_history_buttons()
@@ -3229,6 +3254,7 @@ class MainWindow(QMainWindow):
         from .project_roles import (
             hold_executor_without_role,
             is_role_and_executor_task,
+            pin_assignment_lead,
             remember_executor,
             role_from_assignment,
             set_description_keep_choices,
@@ -3239,12 +3265,17 @@ class MainWindow(QMainWindow):
         task.author = data["author"]
         chosen_executor = str(data.get("executor") or "").strip()
         keeps_choice = is_role_and_executor_task(task) or bool(role_from_assignment(task))
-        if keeps_choice:
+        if is_role_and_executor_task(task):
+            set_description_keep_choices(
+                task,
+                data["description"],
+                role=str(data.get("assign_role") or ""),
+                person=str(data.get("assign_executor") or ""),
+            )
+            pin_assignment_lead(self.store, task)
+        elif role_from_assignment(task):
             set_description_keep_choices(task, data["description"])
-            if chosen_executor:
-                remember_executor(task, chosen_executor)
-            else:
-                remember_executor(task, "")
+            remember_executor(task, chosen_executor)
         else:
             task.description = data["description"]
             held = hold_executor_without_role(self.store, task, chosen_executor)
