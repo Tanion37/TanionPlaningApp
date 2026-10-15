@@ -1370,7 +1370,8 @@ class MainWindow(QMainWindow):
     def _executor_names(self) -> list[str]:
         if self.demo_mode:
             return list(DEMO_EXECUTORS)
-        self.executors_store.load()
+        if not self.executors_store.names:
+            self.executors_store.load()
         return list(self.executors_store.names)
 
     def _note_task_change(
