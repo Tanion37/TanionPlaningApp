@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +31,7 @@ from .day_tasks import (
     pack_day_columns,
     priority_sections,
     refresh_inbox_tags,
+    release_inbox_outside_inbox,
     section_heading,
 )
 from .layout_metrics import content_side_margins
@@ -55,8 +57,10 @@ class DropSection(QFrame):
         self._paint_on = False
         self._drop_on = False
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(6, 6, 6, 6)
-        self._layout.setSpacing(6)
+        self._layout.setContentsMargins(10, 8, 10, 10)
+        self._layout.setSpacing(8)
+        self._layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.title_lab = QLabel(title)
         font = QFont("Segoe UI", 11)
         font.setBold(True)
@@ -66,9 +70,11 @@ class DropSection(QFrame):
         self.title_lab.mousePressEvent = self._on_title_press  # type: ignore[method-assign]
         self._layout.addWidget(self.title_lab)
         self._blocks_host = QVBoxLayout()
-        self._blocks_host.setSpacing(6)
+        self._blocks_host.setSpacing(8)
         self._layout.addLayout(self._blocks_host)
-        self._layout.addStretch(1)
+        self._drop_pad = QWidget()
+        self._drop_pad.setFixedHeight(36)
+        self._layout.addWidget(self._drop_pad)
         self._apply_chrome()
 
     def _on_title_press(self, event) -> None:  # noqa: ANN001
@@ -84,9 +90,15 @@ class DropSection(QFrame):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+        self._sync_drop_pad()
 
     def add_block(self, block: TaskBlock) -> None:
         self._blocks_host.addWidget(block)
+        self._sync_drop_pad()
+
+    def _sync_drop_pad(self) -> None:
+        """Пустое поле оставляет полосу для drop и не растягивается на карточку."""
+        self._drop_pad.setVisible(self._blocks_host.count() == 0)
 
     def set_paint_highlight(self, on: bool) -> None:
         if on == self._paint_on:
@@ -396,7 +408,10 @@ class DayTasksCanvas(QWidget):
     def rebuild(self, *, defer_inbox_hook: bool = False) -> None:
         today = date.today()
         if not self.main.demo_mode:
-            if refresh_inbox_tags(self.main.store.tasks, today):
+            changed = refresh_inbox_tags(self.main.store.tasks, today)
+            if release_inbox_outside_inbox(self.main.store.tasks):
+                changed = True
+            if changed:
                 self.main.request_save()
         tasks = without_day_hidden(self.main.visible_tasks())
 
@@ -453,14 +468,6 @@ class DayTasksCanvas(QWidget):
         self._section_ids[("priority", SECTION_GORIT)] = [t.id for t in sections[SECTION_GORIT]]
         self._section_ids[("priority", SECTION_NUZHNO)] = [t.id for t in sections[SECTION_NUZHNO]]
         self._section_ids[("priority", SECTION_MOZHNO)] = [t.id for t in sections[SECTION_MOZHNO]]
-
-        for sec, key in (
-            (self.sec_gorit, SECTION_GORIT),
-            (self.sec_nuzhno, SECTION_NUZHNO),
-            (self.sec_mozhno, SECTION_MOZHNO),
-        ):
-            n = len(sections[key])
-            sec.setMinimumHeight(36 + max(1, n) * (TASK_BLOCK_H + 6) + 12)
 
         # ДЕНЬ
         while self.day_layout.count():

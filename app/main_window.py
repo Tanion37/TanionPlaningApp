@@ -119,6 +119,12 @@ def apply_status_tag(task, tag_key: str) -> None:
     if key == CONTROL_TAG:
         apply_control_tag(task)
         return
+    if key == ACTUAL_TAG:
+        from .tags import clear_inbox_tag
+
+        clear_inbox_tag(task)
+        task.add_tag(ACTUAL_TAG)
+        return
     task.add_tag(key)
 
 
@@ -3301,6 +3307,8 @@ class MainWindow(QMainWindow):
         had_backlog = task.is_backlog()
         had_control = task.has_tag(CONTROL_TAG)
         task.tags = list(dict.fromkeys(tags))
+        if task.is_actual() or task.is_control():
+            clear_inbox_tag(task)
         if new_start != old_start:
             clear_inbox_tag(task)
         if task.is_backlog() and not had_backlog:

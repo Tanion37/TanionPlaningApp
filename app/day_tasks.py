@@ -27,6 +27,20 @@ SECTION_NUZHNO = "Нужно"
 SECTION_MOZHNO = "Можно"
 
 
+def release_inbox_outside_inbox(tasks: Iterable[Task]) -> bool:
+    """Актуальная и контроль не держат тег «входящая»: он только у колонки «Входящие»."""
+    from .tags import clear_inbox_tag
+
+    changed = False
+    for task in tasks:
+        if task.is_hidden_from_boards():
+            continue
+        if task.is_inbox() and (task.is_actual() or task.is_control()):
+            if clear_inbox_tag(task):
+                changed = True
+    return changed
+
+
 def refresh_inbox_tags(tasks: Iterable[Task], today: date | None = None) -> bool:
     """Выставить входящие задачам без актуально со start<=today (или без start)."""
     today = today or date.today()
@@ -71,6 +85,7 @@ def control_tasks(tasks: Iterable[Task], today: date | None = None) -> list[Task
             for t in tasks
             if not t.is_hidden_from_boards()
             and t.is_control()
+            and not t.is_inbox()
             and is_own_executor(getattr(t, "executor", None))
             and (t.start_at is None or t.start_at <= today)
         ],
@@ -79,12 +94,12 @@ def control_tasks(tasks: Iterable[Task], today: date | None = None) -> list[Task
 
 
 def priority_section_of(task: Task) -> str | None:
-    """Горит / Нужно / Можно для задач с актуально (и без входящие предпочтительно)."""
+    """Горит / Нужно / Можно для своих актуальных задач без тега «входящая»."""
     if task.is_hidden_from_boards():
         return None
     if not is_own_executor(getattr(task, "executor", None)):
         return None
-    if task.is_control():
+    if task.is_control() or task.is_inbox():
         return None
     if not task.is_actual():
         return None
@@ -277,7 +292,7 @@ def day_tag_counts(tasks: Iterable[Task]) -> list[tuple[str, list[Task]]]:
     by_tag: dict[str, list[Task]] = {}
     untagged: list[Task] = []
     for task in tasks:
-        if task.is_hidden_from_boards() or not task.is_actual():
+        if task.is_hidden_from_boards() or not task.is_actual() or task.is_inbox():
             continue
         if not is_own_executor(getattr(task, "executor", None)):
             continue
@@ -327,17 +342,17 @@ def rank_signature(sections: list[tuple[str, list[Task]]]) -> tuple:
 
 
 def executor_sections(tasks: Iterable[Task], today: date | None = None) -> list[tuple[str, list[Task]]]:
-    """Разделы ДЕНЬ по исполнителям, кроме Юры / пустого. Входящие тоже остаются на экране."""
+    """Разделы ДЕНЬ по исполнителям, кроме Юры / пустого. Тег «входящая» сюда не попадает."""
     today = today or date.today()
     by_name: dict[str, list[Task]] = {}
     for task in tasks:
-        if task.is_hidden_from_boards() or task.is_backlog():
+        if task.is_hidden_from_boards() or task.is_backlog() or task.is_inbox():
             continue
         name = (getattr(task, "executor", None) or "").strip()
         if is_own_executor(name):
             continue
         start_ok = task.start_at is None or task.start_at <= today
-        on_day = task.is_actual() or ((task.is_inbox() or task.is_control()) and start_ok)
+        on_day = task.is_actual() or (task.is_control() and start_ok)
         if not on_day:
             continue
         by_name.setdefault(name, []).append(task)
