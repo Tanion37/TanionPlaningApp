@@ -57,10 +57,9 @@ class DropSection(QFrame):
         self._paint_on = False
         self._drop_on = False
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(10, 8, 10, 10)
+        self._layout.setContentsMargins(6, 8, 6, 10)
         self._layout.setSpacing(8)
-        self._layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.title_lab = QLabel(title)
         font = QFont("Segoe UI", 11)
         font.setBold(True)
@@ -99,6 +98,7 @@ class DropSection(QFrame):
     def _sync_drop_pad(self) -> None:
         """Пустое поле оставляет полосу для drop и не растягивается на карточку."""
         self._drop_pad.setVisible(self._blocks_host.count() == 0)
+        self.updateGeometry()
 
     def set_paint_highlight(self, on: bool) -> None:
         if on == self._paint_on:
