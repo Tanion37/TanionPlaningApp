@@ -3200,9 +3200,9 @@ class MainWindow(QMainWindow):
             elif (task.project or "").strip() and not (task.role or "").strip():
                 from .project_roles import bind_task_executor
 
-            for extra in bind_task_executor(self.store, task):
-                append_log("created", extra, detail="назначить роль", source="app")
-                self._note_task_change(extra, action="upsert")
+                for extra in bind_task_executor(self.store, task):
+                    append_log("created", extra, detail="назначить роль", source="app")
+                    self._note_task_change(extra, action="upsert")
             if (task.project or "").strip() and not (task.role or "").strip():
                 from .project_roles import hold_executor_without_role
 
