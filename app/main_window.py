@@ -1365,6 +1365,8 @@ class MainWindow(QMainWindow):
         self._place_floating_controls()
 
         self._supabase_busy = False
+        self._reauth_open = False
+        self._reauth_dismissed = False
         self._supabase_timer = QTimer(self)
         self._supabase_timer.setInterval(45 * 1000)
         self._supabase_timer.timeout.connect(self._supabase_sync)
@@ -1508,17 +1510,56 @@ class MainWindow(QMainWindow):
     def _supabase_sync(self) -> None:
         if self.demo_mode or getattr(self, "_supabase_busy", False):
             return
-        from .supabase_sync import sync_store
+        from .supa import has_live_session, refresh_saved_session, remembered
 
         self._supabase_busy = True
         try:
-            changed, conflicts = sync_store(self.store)
-            if conflicts:
-                self._ask_supabase_conflicts(conflicts)
-            if changed or conflicts:
-                self.reload_boards()
+            if remembered():
+                state = refresh_saved_session()
+                if state == "rejected":
+                    if not self._reauth_dismissed:
+                        self._prompt_reauth()
+                    return
+                if state == "offline" and not has_live_session():
+                    return
+                if state not in ("ok", "offline"):
+                    return
+            self._run_supabase_sync()
         finally:
             self._supabase_busy = False
+
+    def _prompt_reauth(self) -> None:
+        """Пароль поверх открытого окна. Отмена оставляет локальную работу."""
+        if self._reauth_open:
+            return
+        from .login_dialog import LoginDialog
+        from .supa import remembered_email
+
+        self._reauth_open = True
+        try:
+            dialog = LoginDialog(
+                self,
+                notice=(
+                    "Сессия на сервере закончилась. Введите пароль, чтобы снова "
+                    "синхронизировать задачи. Локальная работа уже открыта."
+                ),
+                email=remembered_email(),
+            )
+            if dialog.exec() != dialog.DialogCode.Accepted:
+                self._reauth_dismissed = True
+                return
+            self._run_supabase_sync()
+        finally:
+            self._reauth_open = False
+
+    def _run_supabase_sync(self) -> None:
+        from .supabase_sync import sync_store
+
+        changed, conflicts = sync_store(self.store)
+        if conflicts:
+            self._ask_supabase_conflicts(conflicts)
+        if changed or conflicts:
+            self.reload_boards()
 
     def _ask_supabase_conflicts(self, conflicts: list) -> None:
         from .supabase_sync import keep_local, take_remote

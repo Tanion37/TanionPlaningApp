@@ -1,4 +1,4 @@
-"""Окно входа: почта и пароль. Без сессии приложение не открывается."""
+"""Окно входа: почта и пароль. Без отметки «Запомнить меня» приложение не открывается."""
 
 from __future__ import annotations
 
@@ -27,24 +27,32 @@ def _login_error(exc: Exception) -> str:
 
 
 class LoginDialog(QDialog):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, parent=None, *, notice: str = "", email: str = "") -> None:
+        super().__init__(parent)
         self.setWindowTitle("Вход")
         self.setModal(True)
-        self.resize(380, 220)
+        self.resize(380, 260 if notice else 220)
         root = QVBoxLayout(self)
+        if notice:
+            hint = QLabel(notice)
+            hint.setWordWrap(True)
+            root.addWidget(hint)
         form = QFormLayout()
         self.email = QLineEdit()
         self.email.setPlaceholderText("почта")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setPlaceholderText("пароль")
+        if email:
+            self.email.setText(email)
         form.addRow("Почта", self.email)
         form.addRow("Пароль", self.password)
         root.addLayout(form)
         self.remember = QCheckBox("Запомнить меня")
         self.remember.setChecked(True)
-        self.remember.setToolTip("Следующий запуск откроется без почты и пароля")
+        self.remember.setToolTip(
+            "Следующий запуск откроется без почты и пароля, в том числе без интернета"
+        )
         root.addWidget(self.remember)
         self.error = QLabel("")
         self.error.setWordWrap(True)
@@ -80,13 +88,14 @@ class LoginDialog(QDialog):
 
 
 def ensure_login() -> bool:
-    """Восстановить сессию или спросить почту и пароль. False — пользователь закрыл окно."""
-    from .supa import restore_session
+    """Открыть сразу, если пользователь запомнен. Иначе спросить почту и пароль.
 
-    try:
-        if restore_session():
-            return True
-    except Exception:
-        pass
+    Сеть здесь не проверяется: сохранённая отметка пускает в локальную книгу.
+    False — пользователь закрыл окно входа.
+    """
+    from .supa import remembered
+
+    if remembered():
+        return True
     dialog = LoginDialog()
     return dialog.exec() == QDialog.DialogCode.Accepted
