@@ -27,11 +27,19 @@ def _login_error(exc: Exception) -> str:
 
 
 class LoginDialog(QDialog):
-    def __init__(self, parent=None, *, notice: str = "", email: str = "") -> None:
+    def __init__(
+        self,
+        parent=None,
+        *,
+        notice: str = "",
+        email: str = "",
+        allow_local: bool = True,
+    ) -> None:
         super().__init__(parent)
+        self.local_only = False
         self.setWindowTitle("Вход")
         self.setModal(True)
-        self.resize(380, 260 if notice else 220)
+        self.resize(380, 300 if notice else 260)
         root = QVBoxLayout(self)
         if notice:
             hint = QLabel(notice)
@@ -54,6 +62,13 @@ class LoginDialog(QDialog):
             "Следующий запуск откроется без почты и пароля, в том числе без интернета"
         )
         root.addWidget(self.remember)
+        if allow_local:
+            local = QPushButton("Работать локально")
+            local.setToolTip(
+                "Открыть задачи на этом компьютере. В Supabase они не уйдут, пока не нажмёте «Синхронизация»."
+            )
+            local.clicked.connect(self._work_local)
+            root.addWidget(local)
         self.error = QLabel("")
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #9b2c2c;")
@@ -86,16 +101,23 @@ class LoginDialog(QDialog):
             return
         self.accept()
 
+    def _work_local(self) -> None:
+        self.local_only = True
+        self.accept()
 
-def ensure_login() -> bool:
-    """Открыть сразу, если пользователь запомнен. Иначе спросить почту и пароль.
+
+def ensure_login() -> str:
+    """«sync» — вошли или запомнены, «local» — без аккаунта, «» — окно закрыли.
 
     Сеть здесь не проверяется: сохранённая отметка пускает в локальную книгу.
-    False — пользователь закрыл окно входа.
     """
     from .supa import remembered
 
     if remembered():
-        return True
+        return "sync"
     dialog = LoginDialog()
-    return dialog.exec() == QDialog.DialogCode.Accepted
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return ""
+    if dialog.local_only:
+        return "local"
+    return "sync"

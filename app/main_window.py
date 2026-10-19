@@ -1092,7 +1092,13 @@ def _restart_supervised_bots() -> None:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, store: TaskStore, annotations: AnnotationStore | None = None) -> None:
+    def __init__(
+        self,
+        store: TaskStore,
+        annotations: AnnotationStore | None = None,
+        *,
+        sync_enabled: bool = True,
+    ) -> None:
         from .theme import load as load_theme
 
         load_theme()
@@ -1107,6 +1113,7 @@ class MainWindow(QMainWindow):
         self.selected_task_id: str | None = None
         self.selected_ann_id: str | None = None
         self.demo_mode = False
+        self._sync_enabled = sync_enabled
         self.demo_tasks: list[Task] = []
         self.place_label_mode = False
         self.draw_rect_mode = False
@@ -1149,6 +1156,13 @@ class MainWindow(QMainWindow):
         self.btn_clear_filter.clicked.connect(self.clear_filters)
         self.btn_clear_filter.hide()
         chrome_layout.addWidget(self.btn_clear_filter)
+
+        self.btn_sync = QPushButton("Синхронизация")
+        self.btn_sync.setToolTip(
+            "Войти в аккаунт и синхронизировать задачи с Supabase. Без входа локальные правки не отправляются."
+        )
+        self.btn_sync.clicked.connect(self.sync_with_account)
+        chrome_layout.addWidget(self.btn_sync)
 
         self.btn_logout = QPushButton("Выйти из аккаунта")
         self.btn_logout.setToolTip("Забыть вход и закрыть приложение. Следующий запуск снова спросит почту и пароль.")
@@ -1503,12 +1517,32 @@ class MainWindow(QMainWindow):
         self._flush_save()
 
     def _schedule_supabase_sync(self) -> None:
-        if self.demo_mode:
+        if self.demo_mode or not self._sync_enabled:
             return
         QTimer.singleShot(400, self._supabase_sync)
 
+    def sync_with_account(self) -> None:
+        """Вход, если сессии нет, и сразу синхронизация. Отмена оставляет локальный режим."""
+        from .login_dialog import LoginDialog
+        from .supa import has_live_session
+
+        if not has_live_session():
+            dialog = LoginDialog(
+                self,
+                notice=(
+                    "Войдите в аккаунт. После входа локальные задачи отправятся в Supabase, "
+                    "а облачные подтянутся сюда."
+                ),
+                allow_local=False,
+            )
+            if dialog.exec() != dialog.DialogCode.Accepted or dialog.local_only:
+                return
+        self._sync_enabled = True
+        self._reauth_dismissed = False
+        self._supabase_sync()
+
     def _supabase_sync(self) -> None:
-        if self.demo_mode or getattr(self, "_supabase_busy", False):
+        if self.demo_mode or not self._sync_enabled or getattr(self, "_supabase_busy", False):
             return
         from .supa import has_live_session, refresh_saved_session, remembered
 
@@ -1544,6 +1578,7 @@ class MainWindow(QMainWindow):
                     "синхронизировать задачи. Локальная работа уже открыта."
                 ),
                 email=remembered_email(),
+                allow_local=False,
             )
             if dialog.exec() != dialog.DialogCode.Accepted:
                 self._reauth_dismissed = True
@@ -3487,13 +3522,14 @@ def run_app(xlsx_path: Path | None = None) -> int:
     apply_palette(app)
     from .login_dialog import ensure_login
 
-    if not ensure_login():
+    login_mode = ensure_login()
+    if not login_mode:
         return 0
     load_order(root)
     store = TaskStore(xlsx_path)
     store.load()
     annotations = AnnotationStore.load(root)
-    window = MainWindow(store, annotations)
+    window = MainWindow(store, annotations, sync_enabled=login_mode == "sync")
     window.setWindowIcon(icon)
     window.show()
     if "--fullscreen" in sys.argv:
