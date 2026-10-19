@@ -1150,6 +1150,11 @@ class MainWindow(QMainWindow):
         self.btn_clear_filter.hide()
         chrome_layout.addWidget(self.btn_clear_filter)
 
+        self.btn_logout = QPushButton("Выйти из аккаунта")
+        self.btn_logout.setToolTip("Забыть вход и закрыть приложение. Следующий запуск снова спросит почту и пароль.")
+        self.btn_logout.clicked.connect(self.logout_and_quit)
+        chrome_layout.addWidget(self.btn_logout)
+
         layout.addWidget(self.chrome)
 
         self.stack = QStackedWidget()
@@ -3405,6 +3410,16 @@ class MainWindow(QMainWindow):
             self._on_swipe(-1)
             return
         super().keyPressEvent(event)
+
+    def logout_and_quit(self) -> None:
+        """Сбросить сессию и закрыть приложение. Следующий запуск потребует вход."""
+        self.flush_save()
+        from .supa import logout
+
+        logout()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.flush_save()

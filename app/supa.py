@@ -63,13 +63,18 @@ def _clear_session() -> None:
         pass
 
 
-def login(email: str, password: str):
-    """Войти по почте и паролю. Дальше запросы идут от этого пользователя."""
+def login(email: str, password: str, *, remember: bool = False):
+    """Войти по почте и паролю. Дальше запросы идут от этого пользователя.
+
+    Сессия на диске остаётся только если отмечено «Запомнить меня».
+    """
     res = supabase.auth.sign_in_with_password(
         {"email": (email or "").strip(), "password": password}
     )
-    if res.session is not None:
+    if remember and res.session is not None:
         _save_session(res.session)
+    else:
+        _clear_session()
     return res.user
 
 

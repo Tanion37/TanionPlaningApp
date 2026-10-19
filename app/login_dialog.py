@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -30,7 +31,7 @@ class LoginDialog(QDialog):
         super().__init__()
         self.setWindowTitle("Вход")
         self.setModal(True)
-        self.resize(380, 180)
+        self.resize(380, 220)
         root = QVBoxLayout(self)
         form = QFormLayout()
         self.email = QLineEdit()
@@ -41,6 +42,10 @@ class LoginDialog(QDialog):
         form.addRow("Почта", self.email)
         form.addRow("Пароль", self.password)
         root.addLayout(form)
+        self.remember = QCheckBox("Запомнить меня")
+        self.remember.setChecked(True)
+        self.remember.setToolTip("Следующий запуск откроется без почты и пароля")
+        root.addWidget(self.remember)
         self.error = QLabel("")
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #9b2c2c;")
@@ -67,7 +72,7 @@ class LoginDialog(QDialog):
             return
         self.error.setText("")
         try:
-            login(email, password)
+            login(email, password, remember=self.remember.isChecked())
         except Exception as exc:
             self.error.setText(_login_error(exc))
             return
