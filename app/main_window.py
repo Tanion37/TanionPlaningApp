@@ -3499,6 +3499,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.flush_save()
+        from .supa import discard_if_not_remembered
+
+        discard_if_not_remembered()
         super().closeEvent(event)
 
 

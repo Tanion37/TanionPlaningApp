@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from supabase import Client, create_client
+from supabase.lib.client_options import SyncClientOptions
 
 # Публичный ключ проекта. service_role сюда не класть: его RLS не останавливает.
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://ectxmgrywoefnbjvdxff.supabase.co"
@@ -16,7 +17,58 @@ SUPABASE_KEY = (
     or "sb_publishable_ZEFp8AyzLz0bppuNyxkS7A_T5Jh2yzh"
 )
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+class _SessionStorage:
+    """Диск для «Запомнить меня». Библиотека сама пишет сюда новый refresh-токен."""
+
+    def __init__(self) -> None:
+        self._memory: dict[str, str] = {}
+        self.remember = False
+        self.email = ""
+
+    def get_item(self, key: str) -> str | None:
+        cached = self._memory.get(key)
+        if cached:
+            return cached
+        if self._memory and not self.remember:
+            return next(iter(self._memory.values()))
+        data = _load_record() or {}
+        if not data.get("remember"):
+            return None
+        raw = data.get("session")
+        if isinstance(raw, dict):
+            text = json.dumps(raw, ensure_ascii=False)
+        else:
+            text = str(raw or "")
+        if not text.strip():
+            return None
+        self._memory[key] = text
+        self.remember = True
+        self.email = str(data.get("email") or self.email)
+        return text
+
+    def set_item(self, key: str, value: str) -> None:
+        self._memory = {key: value}
+        found = _email_from_session(value)
+        if found:
+            self.email = found
+        if not self.remember:
+            _clear_session()
+            return
+        _write_record(
+            {
+                "remember": True,
+                "email": self.email,
+                "session": value,
+            }
+        )
+
+    def remove_item(self, key: str) -> None:
+        self._memory.pop(key, None)
+        if not self._memory:
+            _clear_session()
+
+
+_storage = _SessionStorage()
 
 
 def _session_path() -> Path:
@@ -44,34 +96,60 @@ def _write_record(data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _save_session(session, *, email: str = "") -> None:
-    if session is None:
-        return
-    access = getattr(session, "access_token", "") or ""
-    refresh = getattr(session, "refresh_token", "") or ""
-    if not access or not refresh:
-        return
-    previous = _load_record() or {}
-    kept_email = (email or str(previous.get("email") or "")).strip()
-    _write_record(
-        {
-            "remember": True,
-            "email": kept_email,
-            "access_token": access,
-            "refresh_token": refresh,
-        }
-    )
+def _email_from_session(raw: str) -> str:
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    user = data.get("user") if isinstance(data, dict) else None
+    if isinstance(user, dict):
+        return str(user.get("email") or "").strip()
+    return ""
 
 
-def _load_tokens() -> tuple[str, str] | None:
-    data = _load_record()
-    if not data:
-        return None
-    access = str(data.get("access_token") or "")
-    refresh = str(data.get("refresh_token") or "")
-    if not access or not refresh:
-        return None
-    return access, refresh
+def _stored_refresh(data: dict | None = None) -> str:
+    record = data if data is not None else (_load_record() or {})
+    raw = record.get("session")
+    parsed: dict | None = None
+    if isinstance(raw, dict):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            loaded = None
+        if isinstance(loaded, dict):
+            parsed = loaded
+    if isinstance(parsed, dict) and parsed.get("refresh_token"):
+        return str(parsed["refresh_token"])
+    return str(record.get("refresh_token") or "")
+
+
+def _session_text(session) -> str:
+    import time
+
+    if hasattr(session, "model_dump_json"):
+        raw = session.model_dump_json()
+    else:
+        raw = json.dumps(
+            {
+                "access_token": getattr(session, "access_token", "") or "",
+                "refresh_token": getattr(session, "refresh_token", "") or "",
+                "expires_in": int(getattr(session, "expires_in", 0) or 3600),
+                "expires_at": getattr(session, "expires_at", None),
+                "token_type": getattr(session, "token_type", "") or "bearer",
+                "user": {"email": _storage.email},
+            },
+            ensure_ascii=False,
+        )
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if isinstance(data, dict) and not data.get("expires_at"):
+        data["expires_at"] = int(time.time()) + int(data.get("expires_in") or 3600)
+        raw = json.dumps(data, ensure_ascii=False)
+    return raw
 
 
 def _clear_session() -> None:
@@ -83,20 +161,22 @@ def _clear_session() -> None:
 
 
 def _drop_tokens_keep_mark() -> None:
-    """Сервер отклонил токен. Отметка входа остаётся, пароль на диск не пишется."""
-    data = _load_record() or {}
-    email = str(data.get("email") or "").strip()
+    """Сервер отклонил refresh-токен. Почта на диске остаётся, пароль не пишется."""
+    email = _storage.email or str((_load_record() or {}).get("email") or "").strip()
+    _storage._memory.clear()
+    _storage.email = email
+    _storage.remember = True
     _write_record({"remember": True, "email": email})
 
 
 def remembered() -> bool:
-    """Этот компьютер уже помнит пользователя. Сеть для проверки не нужна."""
+    """Есть сохранённый refresh-токен. Сеть для проверки не нужна."""
     data = _load_record()
     if not data:
         return False
-    if "remember" in data:
-        return bool(data.get("remember"))
-    return bool(data.get("access_token") and data.get("refresh_token"))
+    if "remember" in data and not data.get("remember"):
+        return False
+    return bool(_stored_refresh(data))
 
 
 def remembered_email() -> str:
@@ -105,11 +185,10 @@ def remembered_email() -> str:
 
 
 def has_live_session() -> bool:
-    """Сессия уже есть в памяти этого запуска. Сеть не нужна."""
-    try:
-        return supabase.auth.get_session() is not None
-    except Exception:
-        return False
+    """Сессия есть в памяти или в файле «Запомнить меня». Сеть не нужна."""
+    if _storage._memory:
+        return True
+    return remembered()
 
 
 def _is_network_error(exc: BaseException) -> bool:
@@ -144,9 +223,6 @@ def _is_auth_rejected(exc: BaseException) -> bool:
     """Сервер ответил, что сессию обновить нельзя. Обрыв связи сюда не входит."""
     if _is_network_error(exc):
         return False
-    status = getattr(exc, "status", None)
-    if status is None:
-        status = getattr(exc, "status_code", None)
     text = " ".join(
         str(part or "")
         for part in (getattr(exc, "code", ""), getattr(exc, "message", ""), exc)
@@ -159,11 +235,10 @@ def _is_auth_rejected(exc: BaseException) -> bool:
         "refresh token is not valid",
         "session_not_found",
         "session not found",
-        "session expired",
     )
     if any(marker in text for marker in markers):
         return True
-    return status in (400, 401, 403)
+    return False
 
 
 def _server_reachable() -> bool:
@@ -179,54 +254,78 @@ def _server_reachable() -> bool:
     return True
 
 
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    options=SyncClientOptions(
+        storage=_storage,
+        auto_refresh_token=True,
+        persist_session=True,
+    ),
+)
+
+
 def login(email: str, password: str, *, remember: bool = False):
     """Войти по почте и паролю. Дальше запросы идут от этого пользователя.
 
-    На диске остаётся отметка и токены, только если отмечено «Запомнить меня».
-    Пароль не сохраняется.
+    На диске остаётся сессия, только если отмечено «Запомнить меня».
+    Пароль не сохраняется. Новый refresh-токен библиотека пишет в тот же файл.
     """
     email = (email or "").strip()
+    _storage.email = email
+    _storage.remember = bool(remember)
     res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-    if remember and res.session is not None:
-        _save_session(res.session, email=email)
-    else:
+    if res.session is not None:
+        key = next(iter(_storage._memory), "session")
+        _storage.set_item(key, _session_text(res.session))
+    if not remember:
+        _storage.remember = False
         _clear_session()
     return res.user
 
 
 def logout() -> None:
-    _clear_session()
+    """Отозвать сессию на сервере и забыть её на этом компьютере."""
+    _storage.remember = False
     try:
         supabase.auth.sign_out()
     except Exception:
         pass
+    _storage._memory.clear()
+    _storage.email = ""
+    _clear_session()
+
+
+def discard_if_not_remembered() -> None:
+    """Обычное закрытие окна не вызывает sign_out. Без галочки файл сессии убирается."""
+    if _storage.remember or remembered():
+        return
+    _clear_session()
 
 
 def refresh_saved_session() -> str:
-    """Обновить токены, когда связь есть.
+    """Обновить access-токен по сохранённому refresh-токену.
 
-    «ok» — сессия принята. «offline» — связи нет, файл не трогаем.
-    «rejected» — сервер отклонил токен, нужен пароль. «absent» — пользователя не запоминали.
+    «ok» — сессия принята, новый refresh-токен уже на диске.
+    «offline» — связи нет, файл не трогаем.
+    «rejected» — сервер отклонил именно refresh-токен, нужен пароль.
+    «absent» — пользователя не запоминали.
     """
-    if not remembered():
+    if not remembered() and not _storage._memory:
         return "absent"
-    tokens = _load_tokens()
-    if tokens is None:
-        if _server_reachable():
-            return "rejected"
-        return "offline"
     try:
-        res = supabase.auth.set_session(tokens[0], tokens[1])
+        session = supabase.auth.get_session()
     except Exception as exc:
         if _is_auth_rejected(exc):
             _drop_tokens_keep_mark()
             return "rejected"
         return "offline"
-    if res.session is None or res.user is None:
-        _drop_tokens_keep_mark()
-        return "rejected"
-    email = getattr(res.user, "email", "") or ""
-    _save_session(res.session, email=email)
+    if session is None:
+        if remembered() and _server_reachable():
+            return "rejected"
+        if remembered():
+            return "offline"
+        return "absent"
     return "ok"
 
 

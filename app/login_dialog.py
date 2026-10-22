@@ -59,7 +59,8 @@ class LoginDialog(QDialog):
         self.remember = QCheckBox("Запомнить меня")
         self.remember.setChecked(True)
         self.remember.setToolTip(
-            "Следующий запуск откроется без почты и пароля, в том числе без интернета"
+            "После закрытия приложения вход сохранится на этом компьютере. "
+            "Пароль не записывается, сессия обновляется сама."
         )
         root.addWidget(self.remember)
         if allow_local:
@@ -111,11 +112,11 @@ def ensure_login() -> str:
 
     Сеть здесь не проверяется: сохранённая отметка пускает в локальную книгу.
     """
-    from .supa import remembered
+    from .supa import remembered, remembered_email
 
     if remembered():
         return "sync"
-    dialog = LoginDialog()
+    dialog = LoginDialog(email=remembered_email())
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return ""
     if dialog.local_only:
