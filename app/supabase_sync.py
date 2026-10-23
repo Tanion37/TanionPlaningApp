@@ -165,6 +165,36 @@ def _set_last_pulled_at(value: str) -> None:
     )
 
 
+def _as_version(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _remote_version(cloud_uuid: str) -> int | None:
+    from .supa import supabase
+
+    try:
+        rows = (
+            supabase.table("tasks")
+            .select("version")
+            .eq("id", cloud_uuid)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        log.warning("не удалось прочитать version %s", cloud_uuid, exc_info=True)
+        return None
+    if not rows:
+        return None
+    return _as_version(rows[0].get("version"))
+
+
 def _push(store: TaskStore, role_ids: dict[str, str], role_names: dict[str, str]) -> bool:
     from .supa import supabase
 
@@ -199,8 +229,12 @@ def _push(store: TaskStore, role_ids: dict[str, str], role_names: dict[str, str]
                     .execute()
                 )
                 if not res.data:
-                    task.conflict = 1
-                    changed = True
+                    # Пустой ответ — это не всегда чужая правка. Конфликт только если
+                    # version в облаке уже другая. Иначе окно будет открываться снова.
+                    current = _remote_version(task.cloud_uuid)
+                    if current is not None and current != _as_version(task.cloud_version):
+                        task.conflict = 1
+                        changed = True
                     continue
             if not res.data:
                 continue
@@ -251,9 +285,15 @@ def _pull(store: TaskStore, role_names: dict[str, str]) -> bool:
             by_uuid[cloud_id] = local
             apply_remote(local, remote, role_names, store.tasks)
             changed = True
-        elif local.dirty or local.conflict:
+        elif local.dirty and _as_version(remote.get("version")) != _as_version(local.cloud_version):
             local.conflict = 1
             changed = True
+        elif local.conflict:
+            local.conflict = 0
+            changed = True
+        elif local.dirty:
+            # Та же version, что в облаке: это ещё не отправленная правка, не чужая версия.
+            pass
         else:
             apply_remote(local, remote, role_names, store.tasks)
             changed = True
@@ -275,7 +315,12 @@ def sync_store(store: TaskStore) -> tuple[bool, list[Task]]:
             _apply_id_map(store.tasks)
             _fill_prev_uuids(store.tasks)
             role_ids, role_names = _load_roles()
-            changed = _push(store, role_ids, role_names)
+            changed = False
+            for task in store.tasks:
+                if task.conflict:
+                    task.conflict = 0
+                    changed = True
+            changed = _push(store, role_ids, role_names) or changed
             changed = _pull(store, role_names) or changed
         except Exception:
             log.warning("синхронизация пропущена", exc_info=True)
