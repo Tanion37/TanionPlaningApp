@@ -863,25 +863,19 @@ def _task_dialog_size(
     parent: QWidget | None,
     base_w: int,
     base_h: int,
-    project_names: list[str] | None,
+    _project_names: list[str] | None,
     executor_names: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Ширина/высота диалога под кнопки проектов и исполнителей."""
-    projects = list(project_names or [])
+    """Ширина/высота диалога под кнопки исполнителей."""
     executors = list(executor_names or [])
     label_col = 168
     margins = 48
-    chips_w = max(
-        _project_chips_one_row_width(projects),
-        _project_chips_one_row_width(executors),
-    )
+    chips_w = _project_chips_one_row_width(executors)
     want_w = max(base_w, chips_w + label_col + margins)
     max_w, max_h = _dialog_host_limits(parent, want_w, base_h)
     width = min(want_w, max_w)
     field_w = max(80, width - label_col - margins)
-    extra = max(0, (_project_chip_rows(projects, field_w) - 1) * 36)
-    if executors:
-        extra += _project_chip_rows(executors, field_w) * 36
+    extra = _project_chip_rows(executors, field_w) * 36 if executors else 0
     height = min(base_h + extra, max_h)
     return width, height
 
@@ -989,13 +983,6 @@ def _chip_buttons_row(edit: QLineEdit, names: list[str] | None) -> QWidget:
         layout.addWidget(btn)
     wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     return wrap
-
-
-def _project_buttons_row(
-    project_edit: QLineEdit, project_names: list[str] | None
-) -> QWidget:
-    """Кнопки проектов: несколько строк, без горизонтального слайдера."""
-    return _chip_buttons_row(project_edit, project_names)
 
 
 class _ClearableDateEdit(QDateEdit):
@@ -1325,11 +1312,6 @@ class NewTaskDialog(_EnterAcceptDialog):
         self.title_edit.setPlaceholderText("несколько названий — через ;")
         form.addRow("Название *", self.title_edit)
 
-        self.project_edit = QLineEdit()
-        self.project_edit.setPlaceholderText("необязательно")
-        form.addRow("Проект", self.project_edit)
-        form.addRow("", _project_buttons_row(self.project_edit, project_names))
-
         self.description_edit = QPlainTextEdit()
         self.description_edit.setPlaceholderText("Расширенное описание (необязательно)")
         self.description_edit.setMinimumHeight(100)
@@ -1408,7 +1390,6 @@ class NewTaskDialog(_EnterAcceptDialog):
         name = str(self.project_combo.currentData() or "")
         if not name:
             return
-        self.project_edit.setText(name)
         from .projects import preset_of_project
 
         klass = preset_of_project(self._all_tasks, name)
@@ -1449,10 +1430,9 @@ class NewTaskDialog(_EnterAcceptDialog):
         self.title_edit.setText(step.get("title") or "")
         from .projects import next_instance_name, preset_of_project
 
-        current = self.project_edit.text().strip()
+        current = str(self.project_combo.currentData() or "").strip()
         if not current or preset_of_project(self._all_tasks, current) not in ("", name):
             current = next_instance_name(name, self._all_tasks)
-            self.project_edit.setText(current)
         self._sync_project_combo(current)
         self.description_edit.setPlainText(step.get("description") or "")
         self.tag_picker.set_keys(list(step.get("tags") or []))
@@ -1489,7 +1469,7 @@ class NewTaskDialog(_EnterAcceptDialog):
 
         return {
             "title": title,
-            "project": self.project_edit.text().strip(),
+            "project": str(self.project_combo.currentData() or "").strip(),
             "description": self.description_edit.toPlainText().strip(),
             "created_at": _opt_date(self.created),
             "completed_at": None,
@@ -1550,10 +1530,18 @@ class EditTaskDialog(_EnterAcceptDialog):
         self.title_edit = QLineEdit(task.title)
         form.addRow("Название *", self.title_edit)
 
-        self.project_edit = QLineEdit(task.project)
-        self.project_edit.setPlaceholderText("необязательно")
-        form.addRow("Проект", self.project_edit)
-        form.addRow("", _project_buttons_row(self.project_edit, project_names))
+        self.project_combo = QComboBox()
+        self.project_combo.addItem("", "")
+        project_choices = list(project_names or [])
+        current_project = (task.project or "").strip()
+        if current_project and current_project not in project_choices:
+            project_choices.append(current_project)
+        for name in project_choices:
+            self.project_combo.addItem(name, name)
+        project_index = self.project_combo.findData(current_project) if current_project else 0
+        if project_index >= 0:
+            self.project_combo.setCurrentIndex(project_index)
+        form.addRow("Проект", self.project_combo)
 
         from .project_roles import (
             description_without_choices,
@@ -1714,7 +1702,7 @@ class EditTaskDialog(_EnterAcceptDialog):
             return None
         return {
             "title": title,
-            "project": self.project_edit.text().strip(),
+            "project": str(self.project_combo.currentData() or "").strip(),
             "description": self.description_edit.toPlainText(),
             "author": self.author.text().strip(),
             "executor": self.executor.text().strip(),
