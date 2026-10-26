@@ -196,7 +196,6 @@ def _make_copy(store, src: Task, new_start: date, today: date) -> Task:
         remind_period=src.remind_period,
         author=src.author,
         executor=src.executor,
-        assigned_by=getattr(src, "assigned_by", "") or "",
         project=src.project,
         description=src.description,
         tags=_normalize_tag_list(_copy_open_tags(list(src.tags), add_inbox=new_start <= today)),

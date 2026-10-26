@@ -6,11 +6,7 @@ from collections import Counter
 from datetime import date
 from typing import Iterable
 
-from .executors_store import (
-    inbox_executor_visible,
-    is_delegated_inbox_executor,
-    is_own_executor,
-)
+from .executors_store import is_delegated_inbox_executor, is_own_executor
 from .models import Task
 from .tags import (
     ACTUAL_TAG,
@@ -74,7 +70,10 @@ def inbox_tasks(tasks: Iterable[Task], today: date | None = None) -> list[Task]:
             if not t.is_hidden_from_boards()
             and t.is_inbox()
             and not t.is_control()
-            and inbox_executor_visible(t)
+            and (
+                is_own_executor(getattr(t, "executor", None))
+                or is_delegated_inbox_executor(getattr(t, "executor", None))
+            )
             and (t.start_at is None or t.start_at <= today)
         ],
         key=lambda t: t.title.casefold(),
@@ -143,8 +142,8 @@ def apply_executor_assignment(task: Task, executor: str, store=None) -> bool:
     """Поставить исполнителя, снять входящую, сделать актуальной.
 
     Колонка исполнителя на Дне показывает только актуальные чужие задачи.
-    Входящие Юры видны как раньше. Входящие Саши, Лёши, Владислава и Сойера
-    видны этому исполнителю и тому, кто назначил задачу.
+    Во входящих, кроме Юры, видны ещё Саша, Лёша, Владислав и Сойер.
+    Какая задача вообще есть на этом компьютере, решает видимость Supabase.
     Карточка «Назначить роль и исполнителя» остаётся, пока не выбрана ещё и роль.
     Обычная задача без роли тоже остаётся во входящих: исполнитель ждёт на той карточке.
     """
@@ -180,9 +179,6 @@ def apply_executor_assignment(task: Task, executor: str, store=None) -> bool:
     if old != name:
         task.executor = name
         changed = True
-    from .executors_store import remember_inbox_assigner
-
-    remember_inbox_assigner(task, old)
     if task.remove_tag(INBOX_TAG):
         changed = True
     if task.add_tag(ACTUAL_TAG):

@@ -32,85 +32,13 @@ def is_own_executor(name: str | None) -> bool:
     return key in {"юра", "юрий"} or key.startswith("юрий ")
 
 
-# Чужие входящие: колонка «Входящие», но не у всех аккаунтов.
+# Эти исполнители тоже попадают во «Входящие». Кому задача приедет, решает Supabase.
 DELEGATED_INBOX_EXECUTORS: tuple[str, ...] = ("Саша", "Лёша", "Владислав", "Сойер")
-
-# Назначил задачу одному из них — видит её во входящих вместе с исполнителем.
-# Вторая почта — вход на этом компьютере, тот же назначающий.
-INBOX_ASSIGNER_EMAILS: frozenset[str] = frozenset(
-    {
-        "yury@nxt.ru",
-        "proboardgamedesign@yandex.ru",
-    }
-)
-
-# Почта входа исполнителя → его имя. Такой аккаунт видит только свои входящие.
-INBOX_EXECUTOR_EMAILS: dict[str, str] = {}
-
-
-def _email_key(email: str | None) -> str:
-    return (email or "").strip().casefold()
 
 
 def is_delegated_inbox_executor(name: str | None) -> bool:
     key = normalize_executor_name(name)
     return any(key == normalize_executor_name(item) for item in DELEGATED_INBOX_EXECUTORS)
-
-
-def current_login_email() -> str:
-    from .supa import current_email
-
-    return current_email().strip()
-
-
-def is_inbox_assigner(email: str | None) -> bool:
-    key = _email_key(email)
-    return any(key == _email_key(item) for item in INBOX_ASSIGNER_EMAILS)
-
-
-def delegated_inbox_visible(task, email: str | None = None) -> bool:
-    """Входящую Саши, Лёши, Владислава или Сойера видит этот исполнитель и тот, кто её назначил."""
-    if not is_delegated_inbox_executor(getattr(task, "executor", "")):
-        return False
-    viewer = current_login_email() if email is None else email
-    key = _email_key(viewer)
-    mapped = INBOX_EXECUTOR_EMAILS.get(key, "")
-    if mapped and normalize_executor_name(mapped) == normalize_executor_name(getattr(task, "executor", "")):
-        return True
-    if not is_inbox_assigner(key):
-        return False
-    assigned = _email_key(getattr(task, "assigned_by", ""))
-    if not assigned:
-        return True
-    return is_inbox_assigner(assigned)
-
-
-def inbox_executor_visible(task, email: str | None = None) -> bool:
-    if is_own_executor(getattr(task, "executor", None)):
-        return True
-    return delegated_inbox_visible(task, email)
-
-
-def shown_on_boards(task, email: str | None = None) -> bool:
-    """Чужая входящая не показывается на экранах, если этот вход её не видит."""
-    if not getattr(task, "is_inbox", lambda: False)() or task.is_actual() or task.is_control():
-        return True
-    if not is_delegated_inbox_executor(getattr(task, "executor", "")):
-        return True
-    return delegated_inbox_visible(task, email)
-
-
-def remember_inbox_assigner(task, previous: str = "") -> None:
-    """Запомнить почту, которая поставила исполнителя Саше, Лёше, Владиславу или Сойеру."""
-    if not is_delegated_inbox_executor(getattr(task, "executor", "")):
-        return
-    email = current_login_email()
-    if not email:
-        return
-    current = (getattr(task, "executor", "") or "").strip()
-    if (previous or "").strip() == current and (getattr(task, "assigned_by", "") or "").strip():
-        return
-    task.assigned_by = email
 
 
 def telegram_username_for(name: str | None) -> str:
