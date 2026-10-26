@@ -180,7 +180,7 @@ class MorningTaskCard(QWidget):
             painter.drawText(
                 self.rect().adjusted(8, 8, -8, -8),
                 int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
-                "Нет входящих",
+                getattr(self, "empty_text", "Нет входящих"),
             )
             return
 
@@ -222,7 +222,7 @@ class MorningTaskCard(QWidget):
     def _canvas(self) -> MorningReviewCanvas | None:
         widget = self.parentWidget()
         while widget is not None:
-            if getattr(widget, "screen_id", None) == "morning_review":
+            if getattr(widget, "screen_id", None) in ("morning_review", "focus"):
                 return widget  # type: ignore[return-value]
             widget = widget.parentWidget()
         return None
@@ -488,10 +488,14 @@ class MorningReviewCanvas(QWidget):
             hint = btn.sizeHint()
             max_w = max(max_w, hint.width())
             max_h = max(max_h, hint.height())
-        tw, th = task_card_size(self._font_pt, max_w, max_h)
-        self.card.set_metrics(task_font_pt(self._font_pt), tw, th)
+        pt, tw, th = self._task_metrics(max_w, max_h)
+        self.card.set_metrics(pt, tw, th)
         self.btn_minus.setEnabled(self._font_pt > MIN_FONT_PT)
         self.btn_plus.setEnabled(self._font_pt < MAX_FONT_PT)
+
+    def _task_metrics(self, max_w: int, max_h: int) -> tuple[int, int, int]:
+        tw, th = task_card_size(self._font_pt, max_w, max_h)
+        return task_font_pt(self._font_pt), tw, th
 
     def _on_action(self, action: str) -> None:
         if hasattr(self.main, "apply_morning_review_action"):
@@ -544,12 +548,15 @@ class MorningReviewCanvas(QWidget):
         if hasattr(self.main, "edit_task"):
             self.main.edit_task(task_id)
 
+    def _current_task(self):
+        tasks = self.main.visible_tasks() if hasattr(self.main, "visible_tasks") else []
+        return current_inbox_task(tasks)
+
     def rebuild(self) -> None:
         on_left = bool(getattr(self.main, "_controls_on_left", False))
         left_m, right_m = content_side_margins(on_left, base=8)
         self._content_layout.setContentsMargins(left_m, 8, right_m, 0)
-        tasks = self.main.visible_tasks() if hasattr(self.main, "visible_tasks") else []
-        task = current_inbox_task(tasks)
+        task = self._current_task()
         self._ensure_card_in_grid()
         self.card.set_task(task)
         enabled = task is not None

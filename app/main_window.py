@@ -49,6 +49,7 @@ from .day_tasks import (
 )
 from .day_tasks_board import DayTasksCanvas
 from .executors_store import DEFAULT_EXECUTOR, DEMO_EXECUTORS, ExecutorsStore
+from .focus_board import FocusCanvas
 from .morning_review_board import MorningReviewCanvas
 from .layout_metrics import content_left, content_right
 from .lists_board import ListsCanvas
@@ -1192,6 +1193,9 @@ class MainWindow(QMainWindow):
         self.morning_board = MorningReviewCanvas(self)
         self.morning_board.swipe_callback = self._on_swipe
         self.stack.addWidget(self.morning_board)
+        self.focus_board = FocusCanvas(self)
+        self.focus_board.swipe_callback = self._on_swipe
+        self.stack.addWidget(self.focus_board)
         self.screen_titles: list[tuple[str, str]] = [
             ("logs", "Логи"),
             ("backlog", "Бэклог"),
@@ -1199,6 +1203,7 @@ class MainWindow(QMainWindow):
             ("catalog", "Проекты и Preset"),
             ("day_tasks", "Задачи дня"),
             ("morning_review", "Утренний разбор"),
+            ("focus", "Фокус"),
         ]
         for screen_id, title, _fn in SCREENS:
             board = BoardCanvas(store, screen_id, self)
@@ -1677,6 +1682,8 @@ class MainWindow(QMainWindow):
             return self.day_board
         if screen_id == "morning_review":
             return self.morning_board
+        if screen_id == "focus":
+            return self.focus_board
         if screen_id == "catalog":
             return self.catalog_board
         for board in self.boards:
@@ -1713,6 +1720,7 @@ class MainWindow(QMainWindow):
             board.tag_bar.set_highlight(key)
         self.day_board.set_tag_highlight(key)
         self.morning_board.set_tag_highlight(key)
+        self.focus_board.set_tag_highlight(key)
 
     def _rebuild_all_tag_bars(self) -> None:
         active = self.filter_tag
@@ -1723,6 +1731,8 @@ class MainWindow(QMainWindow):
         self.day_board.tag_bar.set_active_filter(active)
         self.morning_board.tag_bar.rebuild_circles()
         self.morning_board.tag_bar.set_active_filter(active)
+        self.focus_board.tag_bar.rebuild_circles()
+        self.focus_board.tag_bar.set_active_filter(active)
 
     def _is_lists_screen(self) -> bool:
         return self._current_screen_id() == "lists"
@@ -2347,6 +2357,14 @@ class MainWindow(QMainWindow):
             self._sync_history_buttons()
 
     def apply_morning_review_action(self, action: str) -> None:
+        from .morning_review import current_inbox_task
+
+        self._apply_review_action(current_inbox_task(self.visible_tasks()), action)
+
+    def apply_focus_action(self, action: str) -> None:
+        self._apply_review_action(self.focus_board.shown_task(), action)
+
+    def _apply_review_action(self, task, action: str) -> None:
         from .morning_review import (
             ACTION_BACKLOG,
             ACTION_DONE,
@@ -2357,10 +2375,8 @@ class MainWindow(QMainWindow):
             ACTION_TOMORROW,
             ACTION_WEEK,
             apply_morning_action,
-            current_inbox_task,
         )
 
-        task = current_inbox_task(self.visible_tasks())
         if not task:
             return
         before_state = snapshot_dict(task)
