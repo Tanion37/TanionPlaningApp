@@ -46,6 +46,7 @@ class Task:
     series_id: str = ""  # id серии периодических копий
     author: str = ""
     executor: str = ""
+    assigned_by: str = ""  # почта входа, которая назначила исполнителя
     project: str = ""
     description: str = ""
     tags: list[str] = field(default_factory=list)

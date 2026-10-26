@@ -79,6 +79,7 @@ COLUMNS: tuple[str, ...] = (
     "dirty",
     "deleted",
     "conflict",
+    "назначил",
 )
 
 HEADER_ALIASES: dict[str, str] = {
@@ -103,6 +104,8 @@ HEADER_ALIASES: dict[str, str] = {
     "author": "кто поставил задачу",
     "исполнитель": "исполнитель",
     "executor": "исполнитель",
+    "назначил": "назначил",
+    "assigned_by": "назначил",
     "assignee": "исполнитель",
     "проект": "проект",
     "project": "проект",
@@ -258,6 +261,7 @@ def _sync_fingerprint(task: Task) -> str:
             "description": task.description,
             "author": task.author,
             "executor": task.executor,
+            "assigned_by": getattr(task, "assigned_by", "") or "",
             "project": task.project,
             "tags": list(task.tags or []),
             "created_at": format_date(task.created_at),
@@ -438,6 +442,7 @@ class TaskStore:
                         _cell(row, mapping, "кто поставил задачу") or ""
                     ).strip(),
                     executor=str(_cell(row, mapping, "исполнитель") or "").strip(),
+                    assigned_by=str(_cell(row, mapping, "назначил") or "").strip(),
                     project=str(_cell(row, mapping, "проект") or "").strip(),
                     description=str(_cell(row, mapping, "описание") or "").strip(),
                     tags=parse_tags_cell(str(_cell(row, mapping, "теги") or "")),
@@ -577,6 +582,7 @@ class TaskStore:
                             int(task.dirty or 0),
                             int(task.deleted or 0),
                             int(task.conflict or 0),
+                            getattr(task, "assigned_by", "") or "",
                         ]
                     )
                 write_tags_sheet(wb)
@@ -596,6 +602,7 @@ class TaskStore:
             remind_period=kwargs.get("remind_period", ""),
             author=kwargs.get("author", ""),
             executor=str(kwargs.get("executor") or "").strip(),
+            assigned_by=str(kwargs.get("assigned_by") or "").strip(),
             project=resolve_project_name(kwargs.get("project"), self.tasks),
             description=str(kwargs.get("description") or ""),
             tags=_normalize_tag_list(list(kwargs.get("tags") or [])),

@@ -2758,7 +2758,9 @@ class MainWindow(QMainWindow):
         """Единственный источник задач для UI."""
         if self.demo_mode:
             return list(self.demo_tasks)
-        return [task for task in self.store.tasks if not task.deleted]
+        from .executors_store import shown_on_boards
+
+        return [task for task in self.store.tasks if not task.deleted and shown_on_boards(task)]
 
     def _project_names(self) -> list[str]:
         from .projects import project_key
@@ -3310,6 +3312,9 @@ class MainWindow(QMainWindow):
                 from .project_roles import hold_executor_without_role
 
                 hold_executor_without_role(self.store, task, task.executor)
+            from .executors_store import remember_inbox_assigner
+
+            remember_inbox_assigner(task)
             if task.is_done() and task.completed_at is None:
                 task.completed_at = date.today()
             append_log("created", task, source="app", before_state=None)
@@ -3367,6 +3372,7 @@ class MainWindow(QMainWindow):
 
         task.project = resolve_project_name(data["project"], self.store.tasks)
         task.author = data["author"]
+        previous_executor = (task.executor or "").strip()
         chosen_executor = str(data.get("executor") or "").strip()
         keeps_choice = is_role_and_executor_task(task) or bool(role_from_assignment(task))
         if is_role_and_executor_task(task):
@@ -3385,6 +3391,9 @@ class MainWindow(QMainWindow):
             held = hold_executor_without_role(self.store, task, chosen_executor)
             if held is None:
                 task.executor = chosen_executor
+        from .executors_store import remember_inbox_assigner
+
+        remember_inbox_assigner(task, previous_executor)
         task.created_at = data["created_at"]
         task.completed_at = data["completed_at"]
         new_start = data["start_at"]

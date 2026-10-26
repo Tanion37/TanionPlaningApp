@@ -77,6 +77,30 @@ def _root_uuid(task: Task, tasks: list[Task]) -> str:
     return current.cloud_uuid or task.cloud_uuid
 
 
+def _remote_extra(task: Task) -> dict:
+    extra = dict(getattr(task, "cloud_extra", None) or {})
+    assigned = (getattr(task, "assigned_by", "") or "").strip()
+    if assigned:
+        extra["assigned_by"] = assigned
+    else:
+        extra.pop("assigned_by", None)
+    return extra
+
+
+def _apply_remote_extra(task: Task, raw) -> None:
+    extra = raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            extra = json.loads(raw)
+        except json.JSONDecodeError:
+            extra = {}
+    if not isinstance(extra, dict):
+        extra = {}
+    task.cloud_extra = dict(extra)
+    if "assigned_by" in extra:
+        task.assigned_by = str(extra.get("assigned_by") or "").strip()
+
+
 def to_remote(task: Task, tasks: list[Task], role_ids: dict[str, str]) -> dict:
     parent_uuid = (task.prev_uuid or "").strip()
     if not parent_uuid and task.prev_id:
@@ -84,7 +108,7 @@ def to_remote(task: Task, tasks: list[Task], role_ids: dict[str, str]) -> dict:
         if parent is not None:
             parent_uuid = parent.cloud_uuid
     tags = tags_to_cell(task.tags)
-    return {
+    payload = {
         "id": task.cloud_uuid,
         "title": (task.title or "").strip() or "(без названия)",
         "description": _text(task.description),
@@ -105,6 +129,10 @@ def to_remote(task: Task, tasks: list[Task], role_ids: dict[str, str]) -> dict:
         "parent_id": parent_uuid or None,
         "root_id": _root_uuid(task, tasks),
     }
+    extra = _remote_extra(task)
+    if extra:
+        payload["extra"] = extra
+    return payload
 
 
 def apply_remote(task: Task, remote: dict, role_names: dict[str, str], tasks: list[Task]) -> None:
@@ -114,6 +142,7 @@ def apply_remote(task: Task, remote: dict, role_names: dict[str, str], tasks: li
     task.description = str(remote.get("description") or "")
     task.executor = str(remote.get("assignee") or "")
     task.author = str(remote.get("author_name") or "")
+    _apply_remote_extra(task, remote.get("extra"))
     task.project = str(remote.get("project") or "")
     if remote.get("tags") is not None:
         task.tags = parse_tags_cell(str(remote.get("tags") or ""))
