@@ -184,6 +184,14 @@ def remembered_email() -> str:
     return str(data.get("email") or "").strip()
 
 
+def current_email() -> str:
+    """Почта текущего входа: из памяти, иначе из сохранённой сессии."""
+    live = (_storage.email or "").strip()
+    if live:
+        return live
+    return remembered_email()
+
+
 def has_live_session() -> bool:
     """Сессия есть в памяти или в файле «Запомнить меня». Сеть не нужна."""
     if _storage._memory:

@@ -27,7 +27,7 @@ class FocusCanvas(MorningReviewCanvas):
         self._bottom_layout.setContentsMargins(0, 0, 0, 0)
         self._bottom_layout.addWidget(self.btn_done)
         self.btn_later = self._make_action(ACTION_LATER, "ПОЗЖЕ")
-        self.btn_later.setToolTip("Показать следующую невыполненную задачу. Круг возвращается к первой.")
+        self.btn_later.setToolTip("Показать следующую свою невыполненную задачу. Круг возвращается к первой.")
         self._bottom_layout.addWidget(self.btn_later)
         self.grid.addWidget(
             bottom,
@@ -54,8 +54,11 @@ class FocusCanvas(MorningReviewCanvas):
         return pt, max(tw, max_w * 2), max(th * 2, max_h * 2)
 
     def _queue(self) -> list[Task]:
+        from .focus import executor_for_login
+        from .supa import current_email
+
         tasks = self.main.visible_tasks() if hasattr(self.main, "visible_tasks") else []
-        return focus_queue(tasks)
+        return focus_queue(tasks, executor=executor_for_login(current_email()))
 
     def shown_task(self) -> Task | None:
         items = self._queue()

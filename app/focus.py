@@ -5,10 +5,29 @@ from __future__ import annotations
 import json
 from typing import Iterable
 
+from .executors_store import is_own_executor, normalize_executor_name
 from .models import Task
 from .morning_review import DEFAULT_FONT_PT, clamp_font_pt
 
 ACTION_LATER = "later"
+
+# Почта входа → исполнитель, чьи задачи крутит «Фокус». Остальные экраны это не используют.
+FOCUS_EMAIL_EXECUTOR: dict[str, str] = {
+    "yury@nxt.ru": "Юра",
+    "yury@grani.games": "Саша",
+    "proboardgamedesign@yandex.ru": "Владислав",
+}
+
+
+def executor_for_login(email: str | None) -> str | None:
+    return FOCUS_EMAIL_EXECUTOR.get((email or "").strip().casefold())
+
+
+def _belongs_to_executor(task: Task, executor: str) -> bool:
+    wanted = normalize_executor_name(executor)
+    if wanted == normalize_executor_name("Юра"):
+        return is_own_executor(task.executor)
+    return normalize_executor_name(task.executor) == wanted
 
 
 def settings_path():
@@ -46,12 +65,17 @@ def _group(task: Task) -> int:
     return 2
 
 
-def focus_queue(tasks: Iterable[Task]) -> list[Task]:
-    """Невыполненные: сначала горящие, затем актуальные, затем остальные."""
+def focus_queue(tasks: Iterable[Task], *, executor: str | None) -> list[Task]:
+    """Невыполненные задачи этого исполнителя: горящие, затем актуальные, затем остальные."""
+    if not executor:
+        return []
     items = [
         task
         for task in tasks
-        if not task.deleted and not task.is_done() and not task.is_cancelled()
+        if not task.deleted
+        and not task.is_done()
+        and not task.is_cancelled()
+        and _belongs_to_executor(task, executor)
     ]
     items.sort(key=lambda task: (_group(task), (task.title or "").casefold(), task.id))
     return items
