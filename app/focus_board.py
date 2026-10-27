@@ -9,7 +9,6 @@ from .focus import ACTION_LATER, focus_queue, load_font_pt, next_index, save_fon
 from .morning_review import button_font_pt, clamp_font_pt
 from .morning_review_board import MorningReviewCanvas
 from .models import Task
-from .morning_review import task_size_for_font
 
 
 class FocusCanvas(MorningReviewCanvas):
@@ -49,9 +48,7 @@ class FocusCanvas(MorningReviewCanvas):
             layout.setSpacing(max(8, self._font_pt // 3))
 
     def _task_metrics(self, max_w: int, max_h: int) -> tuple[int, int, int]:
-        pt = button_font_pt(self._font_pt)
-        tw, th = task_size_for_font(pt)
-        return pt, max(tw, max_w * 2), max(th * 2, max_h * 2)
+        return button_font_pt(self._font_pt), max(1, max_w), max(1, max_h)
 
     def _queue(self) -> list[Task]:
         from .focus import executor_for_login

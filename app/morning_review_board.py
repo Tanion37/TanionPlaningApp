@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PyQt6.QtCore import QMimeData, QPoint, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -44,7 +44,9 @@ from .morning_review import (
     task_size_for_font,
 )
 from .tags import ACTUAL_TAG, DONE_TAG, IMPORTANT_TAG, URGENT_TAG, display_symbol, tags_to_cell
-from .widgets import TagBar
+from .widgets import MIME_TAG, TagBar
+
+MIME_MORNING_ACTION = "application/x-tanion-morning-action"
 
 
 class MorningButton(QPushButton):
@@ -57,7 +59,10 @@ class MorningButton(QPushButton):
         self.setDefault(False)
         self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.setAcceptDrops(True)
+        self.action_key = ""
         self._drop_on = False
+        self._press: QPoint | None = None
+        self._dragged = False
         self._pt = 36
 
     def set_drop_highlight(self, on: bool) -> None:
@@ -120,6 +125,47 @@ class MorningButton(QPushButton):
             " }"
         )
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press = event.position().toPoint()
+            self._dragged = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if (
+            self.action_key
+            and self._press is not None
+            and bool(event.buttons() & Qt.MouseButton.LeftButton)
+            and (event.position().toPoint() - self._press).manhattanLength() >= 10
+        ):
+            self._dragged = True
+            self.setDown(False)
+            hotspot = self._press
+            self._press = None
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(MIME_MORNING_ACTION, self.action_key.encode("utf-8"))
+            mime.setText(self.text())
+            drag.setMimeData(mime)
+            preview = QPixmap(self.size())
+            preview.fill(Qt.GlobalColor.transparent)
+            self.render(preview)
+            drag.setPixmap(preview)
+            drag.setHotSpot(hotspot)
+            drag.exec(Qt.DropAction.CopyAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        dragged = self._dragged
+        self._press = None
+        self._dragged = False
+        if dragged:
+            self.setDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
 
 class MorningTaskCard(QWidget):
     double_clicked = pyqtSignal(str)
@@ -131,8 +177,10 @@ class MorningTaskCard(QWidget):
         self._tw, self._th = task_size_for_font(self._font_pt)
         self.setFixedSize(self._tw, self._th)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
+        self.setAcceptDrops(True)
         self._fg = QColor("#000000")
         self._bd = QColor("#CCCCCC")
+        self._drop_on = False
         self._drag_start: QPoint | None = None
         self._dragging = False
 
@@ -169,7 +217,8 @@ class MorningTaskCard(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self._bd, max(2, self._font_pt // 12)))
+        border = QColor("#FF8C00") if self._drop_on else self._bd
+        painter.setPen(QPen(border, max(3, self._font_pt // 8) if self._drop_on else max(2, self._font_pt // 12)))
         painter.setBrush(QColor(card_bg()))
         painter.drawRect(1, 1, self._tw - 2, self._th - 2)
 
@@ -329,6 +378,53 @@ class MorningTaskCard(QWidget):
             canvas._on_card_click(self.task.id)
         super().mouseReleaseEvent(event)
 
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._accepts_button_drag(event):
+            self._drop_on = True
+            self.update()
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self._accepts_button_drag(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_on = False
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        self._drop_on = False
+        self.update()
+        canvas = self._canvas()
+        if canvas is None or self.task is None or not self._accepts_button_drag(event):
+            event.ignore()
+            return
+        mime = event.mimeData()
+        if mime.hasFormat(MIME_MORNING_ACTION):
+            action = bytes(mime.data(MIME_MORNING_ACTION)).decode("utf-8")
+            if action:
+                canvas._on_action(action)
+                event.acceptProposedAction()
+                return
+        if mime.hasFormat(MIME_TAG):
+            key = bytes(mime.data(MIME_TAG)).decode("utf-8")
+            if key:
+                canvas._on_tag_drop(self.task.id, key)
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def _accepts_button_drag(self, event) -> bool:
+        if self.task is None:
+            return False
+        mime = event.mimeData()
+        return mime.hasFormat(MIME_MORNING_ACTION) or mime.hasFormat(MIME_TAG)
+
 
 class MorningReviewCanvas(QWidget):
     """Холст экрана Утренний разбор."""
@@ -463,6 +559,7 @@ class MorningReviewCanvas(QWidget):
 
     def _make_action(self, action: str, label: str) -> MorningButton:
         btn = MorningButton(label, self.inner)
+        btn.action_key = action
         btn.clicked.connect(lambda _=False, key=action: self._on_action(key))
         self._buttons[action] = btn
         return btn
