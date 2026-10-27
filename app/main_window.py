@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from pathlib import Path
 import uuid
 
-from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1158,6 +1158,13 @@ class MainWindow(QMainWindow):
         self.btn_clear_filter.hide()
         chrome_layout.addWidget(self.btn_clear_filter)
 
+        self.btn_update = QPushButton("Обновить")
+        self.btn_update.setToolTip(
+            "Обновить приложение до последней версии ветки main на GitHub."
+        )
+        self.btn_update.clicked.connect(lambda: self._start_update_check(manual=True))
+        chrome_layout.addWidget(self.btn_update)
+
         self.btn_sync = QPushButton("Синхронизация")
         self.btn_sync.setToolTip(
             "Войти в аккаунт и синхронизировать задачи с Supabase. Без входа локальные правки не отправляются."
@@ -1398,6 +1405,9 @@ class MainWindow(QMainWindow):
         self._periodic_timer.start()
         self._install_xlsx_live_reload()
         self._apply_theme_chrome()
+        self._update_thread: QThread | None = None
+        self._update_manual = False
+        QTimer.singleShot(800, lambda: self._start_update_check(manual=False))
 
     def _executor_names(self) -> list[str]:
         if self.demo_mode:
@@ -3502,6 +3512,76 @@ class MainWindow(QMainWindow):
             self._on_swipe(-1)
             return
         super().keyPressEvent(event)
+
+    def _start_update_check(self, *, manual: bool) -> None:
+        thread = getattr(self, "_update_thread", None)
+        if thread is not None and thread.isRunning():
+            return
+        self._update_manual = manual
+        if manual:
+            self.btn_update.setEnabled(False)
+
+        class _Probe(QThread):
+            done = pyqtSignal(object)
+
+            def run(self) -> None:
+                from .updater import update_available
+
+                self.done.emit(update_available())
+
+        probe = _Probe(self)
+        probe.done.connect(self._on_update_check)
+        probe.finished.connect(lambda: self.btn_update.setEnabled(True))
+        self._update_thread = probe
+        probe.start()
+
+    def _on_update_check(self, available: object) -> None:
+        manual = self._update_manual
+        if available is None:
+            if manual:
+                QMessageBox.information(
+                    self,
+                    "Обновление",
+                    "Нет связи с GitHub. Обновление не проверено.",
+                )
+            return
+        if not available:
+            if manual:
+                QMessageBox.information(
+                    self,
+                    "Обновление",
+                    "Уже установлена последняя версия.",
+                )
+            return
+        if not manual:
+            box = QMessageBox(self)
+            box.setWindowTitle("Обновление")
+            box.setText("Обновить ли приложение до текущей версии?")
+            update_btn = box.addButton("Обновить", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is not update_btn:
+                return
+        self._install_update()
+
+    def _install_update(self) -> None:
+        from .updater import apply_update, restart_app
+
+        self.btn_update.setEnabled(False)
+        ok, detail = apply_update()
+        self.btn_update.setEnabled(True)
+        if not ok:
+            QMessageBox.warning(
+                self,
+                "Обновление",
+                detail or "Не удалось обновить приложение.",
+            )
+            return
+        self.flush_save()
+        restart_app()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def logout_and_quit(self) -> None:
         """Сбросить сессию и закрыть приложение. Следующий запуск потребует вход."""

@@ -11,7 +11,7 @@ from .xlsx_store import default_xlsx_path
 
 SHEET_NAME = "executors"
 DEFAULT_EXECUTOR = "Юра"
-DEFAULT_EXECUTORS: tuple[str, ...] = (DEFAULT_EXECUTOR, "Лёша", "Саша", "Сойер")
+DEFAULT_EXECUTORS: tuple[str, ...] = (DEFAULT_EXECUTOR, "Лёша", "Саша", "Сойер", "Владислав")
 DEMO_EXECUTORS: tuple[str, ...] = ("Кот", "Кактус", "Дракон", "Чайник")
 
 # Telegram @username для отправки списка в чат студии (без @).
@@ -91,17 +91,19 @@ class ExecutorsStore:
                 continue
             if text not in names:
                 names.append(text)
+        changed = False
         if not names:
             names = list(DEFAULT_EXECUTORS)
-            self.names = names
-            self.save()
-            return list(self.names)
-        if not any(n.casefold() == DEFAULT_EXECUTOR.casefold() for n in names):
+            changed = True
+        elif not any(n.casefold() == DEFAULT_EXECUTOR.casefold() for n in names):
             names = [DEFAULT_EXECUTOR, *names]
-            self.names = names
-            self.save()
-            return list(self.names)
+            changed = True
+        if not any(normalize_executor_name(name) == "владислав" for name in names):
+            names.append("Владислав")
+            changed = True
         self.names = names
+        if changed:
+            self.save()
         return list(self.names)
 
     def save(self) -> None:
