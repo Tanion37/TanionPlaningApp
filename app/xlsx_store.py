@@ -519,13 +519,13 @@ class TaskStore:
         for task in self.tasks:
             current = _sync_fingerprint(task)
             previous = self._fingerprints.get(task.id)
-            if previous is None:
-                self._fingerprints[task.id] = current
-                continue
             if (task.project or "").strip():
                 from .projects import recall_forgotten_project
 
                 recall_forgotten_project(task.project)
+            if previous is None:
+                self._fingerprints[task.id] = current
+                continue
             if current != previous:
                 self.mark_changed(task)
                 self._fingerprints[task.id] = current

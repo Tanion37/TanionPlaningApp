@@ -53,6 +53,7 @@ class CatalogCanvas(QWidget):
         box = QVBoxLayout()
         box.addWidget(QLabel("Проекты"))
         self.projects = QListWidget()
+        self.projects.itemDoubleClicked.connect(lambda _item: self._edit_project())
         box.addWidget(self.projects, 1)
         row = QHBoxLayout()
         create = QPushButton("Новый")
@@ -194,6 +195,9 @@ class CatalogCanvas(QWidget):
         lead = str(lead_combo.currentData() or "").strip()
         if not preset or not name or not lead:
             return
+        from .projects import recall_forgotten_project
+
+        recall_forgotten_project(name)
         assign_executor(name, PROJECT_LEAD, lead)
         self.main.create_project_from_preset(name, preset)
 

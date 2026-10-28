@@ -94,6 +94,9 @@ def next_instance_name(preset: str, tasks: list, extra: object = ()) -> str:
     for name in extra or ():
         taken.add(project_key(str(name)))
     taken.discard("")
+    for forgotten in _read_forgotten().values():
+        taken.add(project_key(forgotten))
+    taken.discard("")
     if project_key(base) not in taken:
         return base
     number = 2

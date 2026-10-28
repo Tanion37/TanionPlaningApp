@@ -3146,6 +3146,9 @@ class MainWindow(QMainWindow):
         if self.demo_mode:
             QMessageBox.information(self, "ДЕМО", "В демо-режиме Preset отключён.")
             return
+        from .projects import recall_forgotten_project
+
+        recall_forgotten_project(project)
         if not self._ensure_project_lead(project):
             return
         created = spawn_roots_inbox(self.store, preset_name, project)
