@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 
 
@@ -99,6 +100,101 @@ def next_instance_name(preset: str, tasks: list, extra: object = ()) -> str:
     while project_key(f"{base} {number}") in taken:
         number += 1
     return f"{base} {number}"
+
+
+def _forgotten_path():
+    from .paths import app_root
+
+    return app_root() / "data" / "sync" / "forgotten_projects.json"
+
+
+def _read_forgotten() -> dict[str, str]:
+    path = _forgotten_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(value or key or "").strip()
+        fold = project_key(name)
+        if fold:
+            found[fold] = name
+    return found
+
+
+def _write_forgotten(found: dict[str, str]) -> None:
+    path = _forgotten_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(found, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def remember_forgotten_project(name: str | None) -> None:
+    """Проект снят с задач. Облако не должно вернуть это имя само."""
+    raw = (name or "").strip()
+    fold = project_key(raw)
+    if not fold:
+        return
+    found = _read_forgotten()
+    found[fold] = raw
+    _write_forgotten(found)
+
+
+def recall_forgotten_project(name: str | None) -> None:
+    """Имя снова задали вручную — его можно хранить."""
+    fold = project_key(name)
+    if not fold:
+        return
+    found = _read_forgotten()
+    if fold not in found:
+        return
+    del found[fold]
+    _write_forgotten(found)
+
+
+def is_forgotten_project(name: str | None) -> bool:
+    return project_key(name) in _read_forgotten()
+
+
+def clear_forgotten_projects(tasks: list) -> bool:
+    """Снять забытые имена. Вернуть True, если какая-то задача изменилась."""
+    changed = False
+    for task in tasks or []:
+        if not is_forgotten_project(getattr(task, "project", "")):
+            continue
+        task.project = ""
+        if hasattr(task, "dirty"):
+            task.dirty = 1
+        changed = True
+    return changed
+
+
+def detach_project(store, name: str) -> int:
+    """Убрать проект с задач и запомнить, что его не надо возвращать из облака."""
+    from .project_roles import forget_project
+
+    raw = (name or "").strip()
+    if not raw:
+        return 0
+    remember_forgotten_project(raw)
+    cleared = 0
+    for task in getattr(store, "tasks", []) or []:
+        if not (getattr(task, "project", "") or "").strip():
+            continue
+        if not same_project(task.project, raw):
+            continue
+        task.project = ""
+        if hasattr(store, "mark_changed"):
+            store.mark_changed(task)
+        elif hasattr(task, "dirty"):
+            task.dirty = 1
+        cleared += 1
+    forget_project(raw)
+    return cleared
 
 
 def projects_by_usage_frequency(tasks: list) -> list[str]:

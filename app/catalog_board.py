@@ -24,7 +24,6 @@ from .project_roles import (
     apply_executor_to_tasks,
     assign_executor,
     executor_for,
-    forget_project,
     load_assignments,
     rename_project as rename_project_roles,
     roles_of_project,
@@ -276,10 +275,9 @@ class CatalogCanvas(QWidget):
         answer = QMessageBox.question(self, "Проект", f"Убрать проект «{name}» с задач?")
         if answer != QMessageBox.StandardButton.Yes:
             return
-        for task in self.main.store.tasks:
-            if (task.project or "").strip() == name:
-                task.project = ""
-        forget_project(name)
+        from .projects import detach_project
+
+        detach_project(self.main.store, name)
         self.main.request_save()
         self.main.reload_boards()
 

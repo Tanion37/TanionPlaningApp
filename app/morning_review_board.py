@@ -224,16 +224,30 @@ class MorningTaskCard(QWidget):
 
         if self.task is None:
             painter.setPen(QColor(readable(self._fg.name())))
-            font = QFont("Segoe UI", self._font_pt)
+            empty = getattr(self, "empty_text", "Нет входящих")
+            area = self.rect().adjusted(8, 8, -8, -8)
+            pt = self._font_pt
+            if self._on_focus():
+                pt = self._fit_point_size(
+                    empty,
+                    max(1, area.width()),
+                    max(1, area.height()),
+                    self._font_pt,
+                    int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+                )
+            font = QFont("Segoe UI", pt)
             painter.setFont(font)
             painter.drawText(
-                self.rect().adjusted(8, 8, -8, -8),
+                area,
                 int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
-                getattr(self, "empty_text", "Нет входящих"),
+                empty,
             )
             return
 
         project = (self.task.project or "").strip()
+        if self._on_focus():
+            self._paint_focus_text(painter, project)
+            return
         top = 4
         if project:
             band = self._project_band()
@@ -267,6 +281,71 @@ class MorningTaskCard(QWidget):
             ),
             label,
         )
+
+    def _on_focus(self) -> bool:
+        canvas = self._canvas()
+        return getattr(canvas, "screen_id", None) == "focus"
+
+    def _fit_point_size(
+        self,
+        text: str,
+        width: int,
+        height: int,
+        max_pt: int,
+        flags: int,
+        *,
+        bold: bool = False,
+        family: str = "Segoe UI",
+    ) -> int:
+        width = max(1, int(width))
+        height = max(1, int(height))
+        low, high = 7, max(7, int(max_pt))
+        best = low
+        while low <= high:
+            mid = (low + high) // 2
+            font = QFont(family, mid)
+            font.setBold(bold)
+            rect = QFontMetrics(font).boundingRect(0, 0, width, 100000, flags, text)
+            if rect.height() <= height and rect.width() <= width + 2:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        return best
+
+    def _paint_focus_text(self, painter: QPainter, project: str) -> None:
+        """Текст задачи на «Фокусе» уменьшается, пока не помещается в карточку."""
+        if self.task is None:
+            return
+        pad = 8
+        width = max(1, self._tw - pad * 2)
+        tags_text = tags_to_cell(self.task.tags)
+        label = f"{tags_text} {self.task.title}".strip()
+        top = 4
+        if project:
+            band_h = max(14, min(self._th // 3, self._project_band()))
+            flags = int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine)
+            pt = self._fit_point_size(project, width, band_h, self._font_pt, flags, bold=True)
+            painter.setPen(QColor(readable("#555555")))
+            font = QFont("Segoe UI", pt)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(pad, 2, width, band_h, flags, project)
+            top = band_h + 2
+        title_h = max(1, self._th - top - 6)
+        flags = int(
+            Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignVCenter
+            | Qt.TextFlag.TextWordWrap
+        )
+        family = "Segoe UI Emoji"
+        if not QFont(family).exactMatch():
+            family = "Segoe UI"
+        pt = self._fit_point_size(label, width, title_h, self._font_pt, flags, family=family)
+        painter.setPen(QColor(readable(self._fg.name())))
+        font = QFont(family, pt)
+        painter.setFont(font)
+        painter.drawText(self.rect().adjusted(pad, top, -pad, -6), flags, label)
 
     def _canvas(self) -> MorningReviewCanvas | None:
         widget = self.parentWidget()

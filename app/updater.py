@@ -56,14 +56,26 @@ def update_available() -> bool | None:
 
 
 def apply_update() -> tuple[bool, str]:
-    """Подтянуть main. Второй элемент — текст ошибки."""
+    """Поставить файлы программы на текущий main. data/ не трогает."""
     try:
-        result = _git(["pull", "--ff-only", REPO_URL, BRANCH], timeout=90)
+        fetched = _git(["fetch", REPO_URL, BRANCH], timeout=90)
     except (OSError, subprocess.TimeoutExpired):
         return False, "Не удалось связаться с GitHub."
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "Не удалось обновить.").strip()
-        return False, detail
+    if fetched.returncode != 0:
+        return False, "Не удалось связаться с GitHub."
+    try:
+        fast = _git(["merge", "--ff-only", "FETCH_HEAD"], timeout=90)
+    except (OSError, subprocess.TimeoutExpired):
+        return False, "Не удалось обновить приложение."
+    if fast.returncode == 0:
+        return True, ""
+    # Локальная копия разошлась с main. Берём main целиком: задачи в data/ остаются.
+    try:
+        reset = _git(["reset", "--hard", "FETCH_HEAD"], timeout=90)
+    except (OSError, subprocess.TimeoutExpired):
+        return False, "Не удалось обновить приложение."
+    if reset.returncode != 0:
+        return False, "Не удалось обновить приложение."
     return True, ""
 
 

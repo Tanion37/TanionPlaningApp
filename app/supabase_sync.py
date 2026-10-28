@@ -142,6 +142,11 @@ def apply_remote(task: Task, remote: dict, role_names: dict[str, str], tasks: li
     task.deleted = 1 if remote.get("deleted") else 0
     task.dirty = 0
     task.conflict = 0
+    from .projects import is_forgotten_project
+
+    if is_forgotten_project(task.project):
+        task.project = ""
+        task.dirty = 1
     if task.prev_uuid:
         parent = next((item for item in tasks if item.cloud_uuid == task.prev_uuid), None)
         if parent is not None:

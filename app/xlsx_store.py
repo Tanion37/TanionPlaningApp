@@ -477,6 +477,10 @@ class TaskStore:
             migrated = True
         if reconcile_links(tasks):
             migrated = True
+        from .projects import clear_forgotten_projects
+
+        if clear_forgotten_projects(tasks):
+            migrated = True
         self.tasks = tasks
         mapped = _apply_id_map(self.tasks)
         _fill_prev_uuids(self.tasks)
@@ -518,6 +522,10 @@ class TaskStore:
             if previous is None:
                 self._fingerprints[task.id] = current
                 continue
+            if (task.project or "").strip():
+                from .projects import recall_forgotten_project
+
+                recall_forgotten_project(task.project)
             if current != previous:
                 self.mark_changed(task)
                 self._fingerprints[task.id] = current
