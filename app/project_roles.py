@@ -135,49 +135,15 @@ def pin_assignment_lead(store, task: Task) -> None:
 
 
 def hold_executor_without_role(store, task: Task, person: str) -> bool | None:
-    """Задача проекта без роли остаётся во входящих.
+    """Проект не запрещает назначить исполнителя.
 
-    Чужой исполнитель ждёт на карточке «Назначить роль и исполнителя».
-    None — у задачи уже есть роль или это сама карточка назначения.
-    True или False — случай обработан, и изменилось ли что-то.
+    Раньше задача с проектом и без роли не получала чужого исполнителя:
+    выбор уходил на карточку «Назначить роль и исполнителя», а поле исполнителя
+    очищалось. Из-за этого задачу и проект нельзя было передать, в том числе
+    человеку, у которого уже есть другой проект. None — назначение делает вызывающий код.
     """
-    if store is None:
-        return None
-    if is_role_and_executor_task(task) or role_from_assignment(task):
-        return None
-    if (getattr(task, "role", "") or "").strip():
-        return None
-    if not (getattr(task, "project", "") or "").strip():
-        return None
-    from .executors_store import is_own_executor
-
-    person = (person or "").strip()
-    changed = False
-    if is_own_executor(person):
-        if (getattr(task, "executor", "") or "").strip() != person:
-            task.executor = person
-            changed = True
-            if hasattr(store, "mark_changed"):
-                store.mark_changed(task)
-        return changed
-    bind_task_executor(store, task, getattr(store, "path", None))
-    card = _open_both_assignment(store, task)
-    if card is not None:
-        if remember_executor(card, person):
-            changed = True
-        before_executor = (card.executor or "").strip()
-        before_role = (card.role or "").strip()
-        pin_assignment_lead(store, card)
-        if (card.executor or "").strip() != before_executor or (card.role or "").strip() != before_role:
-            changed = True
-        if changed and hasattr(store, "mark_changed"):
-            store.mark_changed(card)
-    if not is_own_executor(getattr(task, "executor", "")):
-        task.executor = ""
-        changed = True
-        if hasattr(store, "mark_changed"):
-            store.mark_changed(task)
-    return changed
+    del store, task, person
+    return None
 
 
 def _finish_assignment(store, task: Task, role: str, person: str, path: Path | None) -> bool:
@@ -375,7 +341,13 @@ def forget_project(project: str, path: Path | None = None) -> None:
 
 
 def apply_executor_to_tasks(store, project: str, role: str, executor: str) -> None:
-    """Пустым задачам этой роли в проекте поставить назначенного исполнителя."""
+    """Задачам этой роли в проекте поставить исполнителя, даже если он уже был другим.
+
+    Руководитель проекта забирает и задачи проекта без роли.
+    Другой проект у этого человека назначению не мешает.
+    """
+    from .day_tasks import apply_executor_assignment
+
     person = (executor or "").strip()
     role = (role or "").strip()
     if not person or not role:
@@ -385,11 +357,14 @@ def apply_executor_to_tasks(store, project: str, role: str, executor: str) -> No
             continue
         if not same_project(getattr(task, "project", ""), project):
             continue
-        if (getattr(task, "role", "") or "").strip() != role:
+        task_role = (getattr(task, "role", "") or "").strip()
+        if task_role != role and not (role == PROJECT_LEAD and not task_role):
             continue
-        if (getattr(task, "executor", "") or "").strip():
+        if is_role_and_executor_task(task) or role_from_assignment(task):
             continue
-        task.executor = person
+        if (getattr(task, "executor", "") or "").strip() == person:
+            continue
+        apply_executor_assignment(task, person, store=store)
         if hasattr(store, "mark_changed"):
             store.mark_changed(task)
 
