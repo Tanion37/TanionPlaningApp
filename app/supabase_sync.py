@@ -274,15 +274,31 @@ def _push(
     return changed
 
 
-def _pull(store: TaskStore, role_names: dict[str, str], stamps: dict[str, str]) -> bool:
+def _remote_rows(since: str | None) -> list[dict]:
+    """Все строки облака. since ограничивает updated_at. Страницы по 1000, чтобы не срезать хвост."""
     from .supa import supabase
+
+    page = 1000
+    start = 0
+    rows: list[dict] = []
+    while start <= 20000:
+        query = supabase.table("tasks").select("*").order("id")
+        if since:
+            query = query.gt("updated_at", since)
+        chunk = query.range(start, start + page - 1).execute().data or []
+        rows.extend(chunk)
+        if len(chunk) < page:
+            break
+        start += page
+    return rows
+
+
+def _pull(store: TaskStore, role_names: dict[str, str], stamps: dict[str, str]) -> bool:
     from .xlsx_store import _load_id_map, _map_uuid
 
-    since = _last_pulled_at()
-    query = supabase.table("tasks").select("*").order("updated_at")
-    if since:
-        query = query.gt("updated_at", since)
-    remote_rows = query.execute().data or []
+    has_live = any(not task.deleted for task in store.tasks)
+    since = _last_pulled_at() if has_live else None
+    remote_rows = _remote_rows(since)
     by_uuid = {task.cloud_uuid: task for task in store.tasks if task.cloud_uuid}
     reverse = {cloud: local for local, cloud in _load_id_map().items()}
     changed = False
@@ -417,3 +433,31 @@ def take_remote(store: TaskStore, task: Task) -> None:
         _, role_names = _load_roles()
         apply_remote(task, remote[0], role_names, store.tasks)
         store.save(track_edits=False)
+
+
+def merge_remote_tasks(store: TaskStore) -> int:
+    """Влить все строки облака. Локальные задачи без uuid в облаке остаются."""
+    if not _logged_in():
+        raise RuntimeError("нет сессии Supabase")
+    _, role_names = _load_roles()
+    rows = _remote_rows(None)
+    by_uuid = {task.cloud_uuid: task for task in store.tasks if task.cloud_uuid}
+    for remote in rows:
+        cloud_id = str(remote.get("id") or "")
+        if not cloud_id:
+            continue
+        local = by_uuid.get(cloud_id)
+        if local is None:
+            local = Task(
+                id=_next_id(store.tasks),
+                title=str(remote.get("title") or ""),
+                source="supabase",
+            )
+            store.tasks.append(local)
+            by_uuid[cloud_id] = local
+        apply_remote(local, remote, role_names, store.tasks)
+    updated = [str(row.get("updated_at") or "") for row in rows if row.get("updated_at")]
+    if updated:
+        _set_last_pulled_at(max(updated))
+    store.save(track_edits=False)
+    return len([task for task in store.tasks if not task.deleted])

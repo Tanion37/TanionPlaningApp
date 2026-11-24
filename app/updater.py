@@ -31,8 +31,18 @@ def _git(args: list[str], *, timeout: int = 25) -> subprocess.CompletedProcess[s
     )
 
 
+def _app_needs_update() -> bool | None:
+    """Сравнить каталог app на диске с FETCH_HEAD. Ветку репозитория не двигает."""
+    diff = _git(["diff", "--quiet", "FETCH_HEAD", "--", "app"])
+    if diff.returncode == 0:
+        return False
+    if diff.returncode == 1:
+        return True
+    return None
+
+
 def update_available() -> bool | None:
-    """True — в main есть коммиты, которых нет локально. None — проверить не удалось."""
+    """True — в публичном main другой каталог app. None — проверить не удалось."""
     root = _root()
     if not (root / ".git").is_dir():
         return None
@@ -42,21 +52,11 @@ def update_available() -> bool | None:
         return None
     if fetched.returncode != 0:
         return None
-    try:
-        ahead = _git(["rev-list", "--count", f"HEAD..FETCH_HEAD"])
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if ahead.returncode != 0:
-        return None
-    try:
-        count = int((ahead.stdout or "0").strip() or "0")
-    except ValueError:
-        return None
-    return count > 0
+    return _app_needs_update()
 
 
 def apply_update() -> tuple[bool, str]:
-    """Поставить файлы программы на текущий main. data/ не трогает."""
+    """Записать в рабочую копию только каталог app. data/ и ветку не трогает."""
     try:
         fetched = _git(["fetch", REPO_URL, BRANCH], timeout=90)
     except (OSError, subprocess.TimeoutExpired):
@@ -64,18 +64,14 @@ def apply_update() -> tuple[bool, str]:
     if fetched.returncode != 0:
         return False, "Не удалось связаться с GitHub."
     try:
-        fast = _git(["merge", "--ff-only", "FETCH_HEAD"], timeout=90)
+        restored = _git(
+            ["restore", "--source=FETCH_HEAD", "--worktree", "--", "app"],
+            timeout=90,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return False, "Не удалось обновить приложение."
-    if fast.returncode == 0:
-        return True, ""
-    # Локальная копия разошлась с main. Берём main целиком: задачи в data/ остаются.
-    try:
-        reset = _git(["reset", "--hard", "FETCH_HEAD"], timeout=90)
-    except (OSError, subprocess.TimeoutExpired):
-        return False, "Не удалось обновить приложение."
-    if reset.returncode != 0:
-        return False, "Не удалось обновить приложение."
+    if restored.returncode != 0:
+        return False, (restored.stderr or restored.stdout or "Не удалось обновить приложение.").strip()
     return True, ""
 
 
