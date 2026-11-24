@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (
     QFrame,
@@ -95,6 +95,26 @@ class DropSection(QFrame):
         self._blocks_host.addWidget(block)
         self._sync_drop_pad()
 
+    def place_blocks(self, blocks: list[TaskBlock]) -> None:
+        """Поставить карточки в том же порядке. Уже стоящие виджеты не создавать заново."""
+        current: list[TaskBlock] = []
+        for index in range(self._blocks_host.count()):
+            widget = self._blocks_host.itemAt(index).widget()
+            if isinstance(widget, TaskBlock):
+                current.append(widget)
+        if current == blocks:
+            self._sync_drop_pad()
+            return
+        while self._blocks_host.count():
+            item = self._blocks_host.takeAt(0)
+            widget = item.widget()
+            if isinstance(widget, TaskBlock) and widget not in blocks:
+                widget.setParent(None)
+        for block in blocks:
+            block.show()
+            self._blocks_host.addWidget(block)
+        self._sync_drop_pad()
+
     def _sync_drop_pad(self) -> None:
         """Пустое поле оставляет полосу для drop и не растягивается на карточку."""
         self._drop_pad.setVisible(self._blocks_host.count() == 0)
@@ -155,6 +175,84 @@ class DropSection(QFrame):
             event.ignore()
 
 
+class DayColumnSection(QWidget):
+    """Раздел колонки ДЕНЬ. Живёт, пока в нём есть задачи: карточки только переставляются."""
+
+    def __init__(self, canvas: "DayTasksCanvas", kind: str, name: str) -> None:
+        super().__init__(canvas)
+        self.kind = kind
+        self.name = name
+        self.stretch = 1 if kind == "executor" else 0
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        head = QHBoxLayout()
+        if kind == "executor":
+            lab = QLabel(name)
+            lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+            lab.setCursor(Qt.CursorShape.PointingHandCursor)
+            lab.setToolTip(
+                f"Кисть «{name}»: клик по задаче или drop сюда ставит исполнителя, "
+                "снимает входящую и делает актуальной"
+            )
+            lab.mousePressEvent = (  # type: ignore[method-assign]
+                lambda event, section=name: canvas._on_heading_press(event, "executor", section)
+            )
+            head.addWidget(lab, 1)
+            canvas._executor_labels[name] = lab
+            canvas._executor_widgets[name] = self
+        elif name == UNTAGGED_SECTION:
+            lab = QLabel(section_heading(name))
+            lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+            lab.setCursor(Qt.CursorShape.PointingHandCursor)
+            lab.mousePressEvent = (  # type: ignore[method-assign]
+                lambda event, section=name: canvas._on_heading_press(event, "tag", section)
+            )
+            head.addWidget(lab, 1)
+        else:
+            symbol = display_symbol(name) or name[:2]
+            circle = TagCircle(name, symbol, self, draggable=True, reorderable=False)
+            circle.clicked.connect(lambda key=name: canvas.main.on_section_tag_circle(key))
+            canvas._day_tag_circles[name] = circle
+            head.addWidget(circle)
+            lab = QLabel(section_heading(name))
+            lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
+            lab.setCursor(Qt.CursorShape.PointingHandCursor)
+            lab.mousePressEvent = (  # type: ignore[method-assign]
+                lambda event, section=name: canvas._on_heading_press(event, "tag", section)
+            )
+            head.addWidget(lab, 1)
+        layout.addLayout(head)
+        self._blocks = QVBoxLayout()
+        self._blocks.setSpacing(6)
+        layout.addLayout(self._blocks)
+        if kind == "executor":
+            send_btn = QPushButton("Отправить в Telegram")
+            send_btn.setToolTip(f"Список задач «{name}» в чат PGD studio AI")
+            send_btn.clicked.connect(
+                lambda _checked=False, executor=name: canvas.main.send_executor_list(executor)
+            )
+            layout.addWidget(send_btn)
+            layout.addStretch(1)
+
+    def place_blocks(self, blocks: list[TaskBlock]) -> None:
+        current: list[TaskBlock] = []
+        for index in range(self._blocks.count()):
+            widget = self._blocks.itemAt(index).widget()
+            if isinstance(widget, TaskBlock):
+                current.append(widget)
+        if current == blocks:
+            return
+        while self._blocks.count():
+            item = self._blocks.takeAt(0)
+            widget = item.widget()
+            if isinstance(widget, TaskBlock) and widget not in blocks:
+                widget.setParent(None)
+        for block in blocks:
+            block.show()
+            self._blocks.addWidget(block)
+
+
 class DayTasksCanvas(QWidget):
     """Холст экрана Задачи дня."""
 
@@ -166,9 +264,18 @@ class DayTasksCanvas(QWidget):
         self._press_pos: QPoint | None = None
         self._swipe_armed = False
         self._blocks: list[TaskBlock] = []
+        self._block_by_key: dict[tuple, TaskBlock] = {}
+        self._layout_sig: tuple | None = None
+        self._day_structure: tuple | None = None
+        self._day_column_widgets: list[QWidget] = []
+        self._day_sections: dict[tuple[str, str], DayColumnSection] = {}
         self._day_tag_circles: dict[str, TagCircle] = {}
         self._last_day_pack: tuple[int, int] | None = None
         self._day_relayouting = False
+        self._in_rebuild = False
+        self._rebuild_queued = False
+        self._width_fix_pending = False
+        self._force_col_count: int | None = None
         self._defer_inbox_hook = False
         self._section_ids: dict[tuple[str, str], list[str]] = {}
         self._executor_labels: dict[str, QLabel] = {}
@@ -378,18 +485,24 @@ class DayTasksCanvas(QWidget):
             else:
                 w.setStyleSheet("")
 
-    def _clear_blocks(self) -> None:
-        for block in self._blocks:
-            block.setParent(None)
-            block.deleteLater()
-        self._blocks.clear()
-        # висящие после reparent при drag
-        for child in list(self.findChildren(TaskBlock)):
-            child.setParent(None)
-            child.deleteLater()
+    def _card_fp(self, task: Task, linked: str) -> tuple:
+        return (
+            task.title,
+            task.project,
+            task.executor,
+            task.role,
+            tuple(task.tags or ()),
+            task.start_at,
+            task.due_at,
+            task.completed_at,
+            task.remind_at,
+            int(task.deleted or 0),
+            linked,
+        )
 
-    def _make_block(self, task: Task) -> TaskBlock:
+    def _make_block(self, task: Task, linked: str) -> TaskBlock:
         block = TaskBlock(task, self, executor_names=self.main._executor_names())
+        block.hide()
         block.dropped_on_tag.connect(lambda tid, key: self.main.apply_action_to_task(tid, key))
         block.tag_dropped.connect(lambda tid, key: self.main.apply_action_to_task(tid, key))
         block.double_clicked.connect(self.main.edit_task)
@@ -398,102 +511,83 @@ class DayTasksCanvas(QWidget):
         block.role_changed.connect(self.main.on_task_role)
         block.executor_changed.connect(self.main.on_assignment_executor)
         block.add_linked.connect(self.main.on_task_add_linked)
-        from .task_graph import linked_task_title
-
-        block.set_linked_title(linked_task_title(self.main.visible_tasks(), task))
+        block.set_linked_title(linked)
         block.set_marked(task.id == self.main.selected_task_id)
-        self._blocks.append(block)
+        block._day_fp = self._card_fp(task, linked)
         return block
 
-    def rebuild(self, *, defer_inbox_hook: bool = False) -> None:
-        today = date.today()
-        if not self.main.demo_mode:
-            changed = refresh_inbox_tags(self.main.store.tasks, today)
-            if release_inbox_outside_inbox(self.main.store.tasks):
-                changed = True
-            if changed:
-                self.main.request_save()
-        tasks = without_day_hidden(self.main.visible_tasks())
+    def _refresh_block(self, block: TaskBlock, task: Task, linked: str) -> None:
+        marked = task.id == self.main.selected_task_id
+        fp = self._card_fp(task, linked)
+        if block.task is not task or getattr(block, "_day_fp", None) != fp:
+            block.update_task(task)
+            block.set_linked_title(linked)
+            block._day_fp = fp
+        if block._marked != marked:
+            block.set_marked(marked)
 
-        inbox = inbox_tasks(tasks)
-        control = control_tasks(tasks)
-        has_inbox = bool(inbox)
-        has_control = bool(control)
-        # панель слева только при непустых входящих на этом экране
-        want_left = has_inbox and (
-            self.main._is_day_screen() if hasattr(self.main, "_is_day_screen") else True
-        )
-        self._apply_side_margins(want_left)
-        self._clear_blocks()
-        self._day_tag_circles.clear()
-        self._executor_labels.clear()
-        self._executor_widgets.clear()
-        self._executor_drop = None
-        self._section_ids = {}
+    def _sync_blocks(self, slots: list[tuple[tuple, Task]], titles: dict[str, str]) -> None:
+        from .project_roles import is_role_and_executor_task
 
-        # Входящие
-        while self.inbox_layout.count():
-            item = self.inbox_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self.inbox_wrap.setVisible(has_inbox)
-        for task in inbox:
-            self.inbox_layout.addWidget(self._make_block(task))
-        self.inbox_layout.addStretch(1)
-        self._section_ids[("inbox", "inbox")] = [t.id for t in inbox]
+        names = tuple(self.main._executor_names())
+        wanted = {key: task for key, task in slots}
+        for key in list(self._block_by_key):
+            if key not in wanted:
+                block = self._block_by_key.pop(key)
+                block.hide()
+                block.setParent(None)
+                block.deleteLater()
+        for key, task in wanted.items():
+            linked = titles.get(task.id, "")
+            shape = is_role_and_executor_task(task)
+            block = self._block_by_key.get(key)
+            if block is not None and (
+                block._role_assignment != shape or tuple(block._executor_names) != names
+            ):
+                block.hide()
+                block.setParent(None)
+                block.deleteLater()
+                block = None
+            if block is None:
+                block = self._make_block(task, linked)
+                self._block_by_key[key] = block
+            else:
+                self._refresh_block(block, task, linked)
+        self._blocks = list(self._block_by_key.values())
 
-        # Контроль
-        while self.control_layout.count():
-            item = self.control_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self.control_wrap.setVisible(has_control)
-        for task in control:
-            self.control_layout.addWidget(self._make_block(task))
-        self.control_layout.addStretch(1)
-        self._section_ids[("control", "control")] = [t.id for t in control]
+    def _blocks_lifted(self) -> bool:
+        """Карточка снята с колонки на время drag — её надо вернуть в раскладку."""
+        return any(block.parentWidget() is self for block in self._block_by_key.values())
 
-        # Приоритет
-        for sec in (self.sec_gorit, self.sec_nuzhno, self.sec_mozhno):
-            sec.clear_tasks()
-        sections = priority_sections(tasks)
-        for task in sections[SECTION_GORIT]:
-            self.sec_gorit.add_block(self._make_block(task))
-        for task in sections[SECTION_NUZHNO]:
-            self.sec_nuzhno.add_block(self._make_block(task))
-        for task in sections[SECTION_MOZHNO]:
-            self.sec_mozhno.add_block(self._make_block(task))
-        self._section_ids[("priority", SECTION_GORIT)] = [t.id for t in sections[SECTION_GORIT]]
-        self._section_ids[("priority", SECTION_NUZHNO)] = [t.id for t in sections[SECTION_NUZHNO]]
-        self._section_ids[("priority", SECTION_MOZHNO)] = [t.id for t in sections[SECTION_MOZHNO]]
+    def _place_sequence(self, layout, blocks: list[TaskBlock], *, stretch: bool) -> None:
+        current: list[TaskBlock] = []
+        for index in range(layout.count()):
+            widget = layout.itemAt(index).widget()
+            if isinstance(widget, TaskBlock):
+                current.append(widget)
+        if current == blocks:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if isinstance(widget, TaskBlock) and widget not in blocks:
+                widget.setParent(None)
+        for block in blocks:
+            block.show()
+            layout.addWidget(block)
+        if stretch:
+            layout.addStretch(1)
 
-        # ДЕНЬ
-        while self.day_layout.count():
-            item = self.day_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        exec_sections = executor_sections(tasks)
-        tag_sections = day_tag_counts(tasks)
-        exec_names = {name for name, _ in exec_sections}
-        all_sections = list(exec_sections) + list(tag_sections)
-        avail_h = max(200, self.day_scroll.viewport().height() - 8)
-        avail_w = self._estimate_day_width(
-            has_inbox=has_inbox, has_control=has_control, controls_on_left=want_left
-        )
-        viewport_w = max(0, self.day_scroll.viewport().width() - 8)
-        if has_inbox or has_control:
-            # при видимых входящих viewport обычно актуален
-            if viewport_w > 0:
-                avail_w = max(avail_w, viewport_w)
-        elif viewport_w > avail_w:
-            # layout уже успел расширить ДЕНЬ после hide
-            avail_w = viewport_w
-        col_count = max(1, avail_w // (COL_W + COL_GAP))
-        self._last_day_pack = (col_count, avail_h)
-        columns = pack_day_columns(all_sections, col_count=col_count)
+    def _section_blocks(self, kind: str, name: str, tasks: list[Task]) -> list[TaskBlock]:
+        if kind == "inbox":
+            return [self._block_by_key[("inbox", task.id)] for task in tasks]
+        if kind == "control":
+            return [self._block_by_key[("control", task.id)] for task in tasks]
+        if kind == "priority":
+            return [self._block_by_key[("priority", name, task.id)] for task in tasks]
+        return [self._block_by_key[(kind, name, task.id)] for task in tasks]
+
+    def _apply_paint(self) -> None:
         paint_key = None
         exec_paint = None
         pm = getattr(self.main, "paint_mode", None)
@@ -501,100 +595,218 @@ class DayTasksCanvas(QWidget):
             paint_key = pm[1]
         elif pm and pm[0] == "executor":
             exec_paint = pm[1]
-        for col_sections in columns:
-            col_w = QWidget()
-            col_w.setFixedWidth(COL_W)
-            col_w.setMinimumHeight(avail_h)
-            col_l = QVBoxLayout(col_w)
-            col_l.setContentsMargins(0, 0, 0, 0)
-            col_l.setSpacing(0)
-            for tag, tag_tasks in col_sections:
-                sec = QWidget()
-                sec_l = QVBoxLayout(sec)
-                sec_l.setContentsMargins(0, 0, 0, 0)
-                sec_l.setSpacing(6)
-                head = QHBoxLayout()
-                if tag in exec_names:
-                    lab = QLabel(tag)
-                    lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
-                    lab.setCursor(Qt.CursorShape.PointingHandCursor)
-                    lab.setToolTip(
-                        f"Кисть «{tag}»: клик по задаче или drop сюда ставит исполнителя, "
-                        "снимает входящую и делает актуальной"
-                    )
-                    lab.mousePressEvent = (  # type: ignore[method-assign]
-                        lambda event, name=tag: self._on_heading_press(event, "executor", name)
-                    )
-                    head.addWidget(lab, 1)
-                    self._executor_labels[tag] = lab
-                    self._executor_widgets[tag] = sec
-                    self._section_ids[("executor", tag)] = [t.id for t in tag_tasks]
-                elif tag == UNTAGGED_SECTION:
-                    lab = QLabel(section_heading(tag))
-                    lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
-                    lab.setCursor(Qt.CursorShape.PointingHandCursor)
-                    lab.mousePressEvent = (  # type: ignore[method-assign]
-                        lambda event, name=tag: self._on_heading_press(event, "tag", name)
-                    )
-                    head.addWidget(lab, 1)
-                    self._section_ids[("tag", tag)] = [t.id for t in tag_tasks]
-                else:
-                    symbol = display_symbol(tag) or tag[:2]
-                    circle = TagCircle(
-                        tag, symbol, sec, draggable=True, reorderable=False
-                    )
-                    circle.clicked.connect(
-                        lambda key=tag: self.main.on_section_tag_circle(key)
-                    )
-                    self._day_tag_circles[tag] = circle
-                    if paint_key is not None:
-                        circle.set_highlighted(tag == paint_key)
-                    head.addWidget(circle)
-                    lab = QLabel(section_heading(tag))
-                    lab.setStyleSheet(f"color:{readable('#444444')}; font-weight:600;")
-                    lab.setCursor(Qt.CursorShape.PointingHandCursor)
-                    lab.mousePressEvent = (  # type: ignore[method-assign]
-                        lambda event, name=tag: self._on_heading_press(event, "tag", name)
-                    )
-                    head.addWidget(lab, 1)
-                    self._section_ids[("tag", tag)] = [t.id for t in tag_tasks]
-                sec_l.addLayout(head)
-                for task in tag_tasks:
-                    sec_l.addWidget(self._make_block(task))
-                if tag in exec_names:
-                    send_btn = QPushButton("Отправить в Telegram")
-                    send_btn.setToolTip(f"Список задач «{tag}» в чат PGD studio AI")
-                    send_btn.clicked.connect(
-                        lambda _checked=False, name=tag: self.main.send_executor_list(name)
-                    )
-                    sec_l.addWidget(send_btn)
-                    sec_l.addStretch(1)
-                    col_l.addWidget(sec, 1, Qt.AlignmentFlag.AlignTop)
-                else:
-                    col_l.addWidget(sec, 0, Qt.AlignmentFlag.AlignTop)
-            col_l.addStretch(1)
-            self.day_layout.addWidget(col_w, 0, Qt.AlignmentFlag.AlignTop)
-        self.day_layout.addStretch(1)
-
         self.tag_bar.rebuild_circles()
         self.tag_bar.set_active_filter(self.main.filter_tag)
         if paint_key is not None:
             self.tag_bar.set_highlight(paint_key)
+            self.set_tag_highlight(paint_key)
         if exec_paint is not None:
             self.set_executor_highlight(exec_paint)
-
-        pm = getattr(self.main, "paint_mode", None)
         if pm and pm[0] == "priority":
             self.set_priority_highlight(pm[1])
         else:
             self.set_priority_highlight(None)
 
-        if (
-            not defer_inbox_hook
-            and not self._defer_inbox_hook
-            and hasattr(self.main, "on_day_inbox_changed")
-        ):
+    def _place_day(
+        self,
+        packed: list[list[tuple[str, list[Task]]]],
+        exec_names: set[str],
+        avail_h: int,
+    ) -> None:
+        columns_spec: list[list[tuple[str, str, list[Task]]]] = []
+        for column in packed:
+            spec: list[tuple[str, str, list[Task]]] = []
+            for tag, tasks in column:
+                kind = "executor" if tag in exec_names else "tag"
+                spec.append((kind, tag, tasks))
+            columns_spec.append(spec)
+        structure = tuple(tuple((kind, name) for kind, name, _tasks in spec) for spec in columns_spec)
+        if structure == self._day_structure and self._day_column_widgets:
+            for column in self._day_column_widgets:
+                column.setMinimumHeight(avail_h)
+            for spec in columns_spec:
+                for kind, name, tasks in spec:
+                    self._day_sections[(kind, name)].place_blocks(
+                        self._section_blocks(kind, name, tasks)
+                    )
+            return
+        live = {(kind, name) for spec in columns_spec for kind, name, _tasks in spec}
+        for key in list(self._day_sections):
+            if key in live:
+                continue
+            section = self._day_sections.pop(key)
+            if key[0] == "tag":
+                self._day_tag_circles.pop(key[1], None)
+            else:
+                self._executor_labels.pop(key[1], None)
+                self._executor_widgets.pop(key[1], None)
+            section.hide()
+            section.setParent(None)
+            section.deleteLater()
+        for section in self._day_sections.values():
+            section.setParent(self)
+            section.hide()
+        while self.day_layout.count():
+            item = self.day_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._day_column_widgets = []
+        for spec in columns_spec:
+            column = QWidget()
+            column.setFixedWidth(COL_W)
+            column.setMinimumHeight(avail_h)
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(0)
+            for kind, name, tasks in spec:
+                section = self._day_sections.get((kind, name))
+                if section is None:
+                    section = DayColumnSection(self, kind, name)
+                    self._day_sections[(kind, name)] = section
+                section.place_blocks(self._section_blocks(kind, name, tasks))
+                section.show()
+                column_layout.addWidget(section, section.stretch, Qt.AlignmentFlag.AlignTop)
+            column_layout.addStretch(1)
+            self.day_layout.addWidget(column, 0, Qt.AlignmentFlag.AlignTop)
+            self._day_column_widgets.append(column)
+        self.day_layout.addStretch(1)
+        self._day_structure = structure
+
+    def _note_day_width(self) -> None:
+        """После раскладки один раз сверить число колонок с реальной шириной."""
+        if self._width_fix_pending:
+            return
+        self._width_fix_pending = True
+        QTimer.singleShot(0, self._fix_day_width)
+
+    def _fix_day_width(self) -> None:
+        self._width_fix_pending = False
+        if not self.isVisible() or self._in_rebuild:
+            return
+        avail_w = max(COL_W, self.day_scroll.viewport().width() - 8)
+        col_count = max(1, avail_w // (COL_W + COL_GAP))
+        prev = self._last_day_pack
+        if prev is not None and col_count != prev[0]:
+            self._force_col_count = col_count
+            self.rebuild()
+
+    def rebuild(self, *, defer_inbox_hook: bool = False) -> None:
+        del defer_inbox_hook
+        if self._in_rebuild:
+            self._rebuild_queued = True
+            return
+        self._in_rebuild = True
+        try:
+            self._rebuild_now()
+        finally:
+            self._in_rebuild = False
+        if self._rebuild_queued:
+            self._rebuild_queued = False
+            self.rebuild()
+            return
+        self._note_day_width()
+
+    def _rebuild_now(self) -> None:
+        today = date.today()
+        if not self.main.demo_mode:
+            changed = refresh_inbox_tags(self.main.store.tasks, today)
+            if release_inbox_outside_inbox(self.main.store.tasks):
+                changed = True
+            if changed:
+                self.main.request_save()
+        all_tasks = self.main.visible_tasks()
+        from .task_graph import linked_title_map
+
+        titles = linked_title_map(all_tasks)
+        tasks = without_day_hidden(all_tasks)
+        inbox = inbox_tasks(tasks)
+        control = control_tasks(tasks)
+        sections = priority_sections(tasks)
+        exec_sections = executor_sections(tasks)
+        tag_sections = day_tag_counts(tasks)
+        has_inbox = bool(inbox)
+        has_control = bool(control)
+        if hasattr(self.main, "on_day_inbox_changed"):
             self.main.on_day_inbox_changed(has_inbox, has_control)
+        self._apply_side_margins()
+        controls_on_left = bool(getattr(self.main, "_controls_on_left", False))
+        avail_h = max(200, self.day_scroll.viewport().height() - 8)
+        avail_w = self._estimate_day_width(
+            has_inbox=has_inbox, has_control=has_control, controls_on_left=controls_on_left
+        )
+        viewport_w = max(0, self.day_scroll.viewport().width() - 8)
+        if has_inbox or has_control:
+            if viewport_w > 0:
+                avail_w = max(avail_w, viewport_w)
+        elif viewport_w > avail_w:
+            avail_w = viewport_w
+        col_count = self._force_col_count or max(1, avail_w // (COL_W + COL_GAP))
+        self._force_col_count = None
+        self._last_day_pack = (col_count, avail_h)
+
+        slots: list[tuple[tuple, Task]] = []
+        for task in inbox:
+            slots.append((("inbox", task.id), task))
+        for task in control:
+            slots.append((("control", task.id), task))
+        for name in (SECTION_GORIT, SECTION_NUZHNO, SECTION_MOZHNO):
+            for task in sections[name]:
+                slots.append((("priority", name, task.id), task))
+        for name, group in exec_sections:
+            for task in group:
+                slots.append((("executor", name, task.id), task))
+        for tag, group in tag_sections:
+            for task in group:
+                slots.append((("tag", tag, task.id), task))
+        sig = (
+            tuple(task.id for task in inbox),
+            tuple(task.id for task in control),
+            tuple(task.id for task in sections[SECTION_GORIT]),
+            tuple(task.id for task in sections[SECTION_NUZHNO]),
+            tuple(task.id for task in sections[SECTION_MOZHNO]),
+            tuple((name, tuple(task.id for task in group)) for name, group in exec_sections),
+            tuple((tag, tuple(task.id for task in group)) for tag, group in tag_sections),
+            col_count,
+            has_inbox,
+            has_control,
+        )
+        self._sync_blocks(slots, titles)
+        self._section_ids = {
+            ("inbox", "inbox"): [task.id for task in inbox],
+            ("control", "control"): [task.id for task in control],
+            ("priority", SECTION_GORIT): [task.id for task in sections[SECTION_GORIT]],
+            ("priority", SECTION_NUZHNO): [task.id for task in sections[SECTION_NUZHNO]],
+            ("priority", SECTION_MOZHNO): [task.id for task in sections[SECTION_MOZHNO]],
+        }
+        for name, group in exec_sections:
+            self._section_ids[("executor", name)] = [task.id for task in group]
+        for tag, group in tag_sections:
+            self._section_ids[("tag", tag)] = [task.id for task in group]
+        if sig == self._layout_sig and not self._blocks_lifted():
+            self._apply_paint()
+            return
+        self._layout_sig = sig
+        self._executor_drop = ""
+        self.set_executor_drop_highlight(None)
+        self.inbox_wrap.setVisible(has_inbox)
+        self._place_sequence(self.inbox_layout, self._section_blocks("inbox", "", inbox), stretch=True)
+        self.control_wrap.setVisible(has_control)
+        self._place_sequence(
+            self.control_layout, self._section_blocks("control", "", control), stretch=True
+        )
+        self.sec_gorit.place_blocks(self._section_blocks("priority", SECTION_GORIT, sections[SECTION_GORIT]))
+        self.sec_nuzhno.place_blocks(
+            self._section_blocks("priority", SECTION_NUZHNO, sections[SECTION_NUZHNO])
+        )
+        self.sec_mozhno.place_blocks(
+            self._section_blocks("priority", SECTION_MOZHNO, sections[SECTION_MOZHNO])
+        )
+        exec_names = {name for name, _group in exec_sections}
+        packed = pack_day_columns(list(exec_sections) + list(tag_sections), col_count=col_count)
+        self._place_day(packed, exec_names, avail_h)
+        self._apply_paint()
 
     def _on_section_drop(self, task_id: str, section: str) -> None:
         if self.main.demo_mode:
@@ -624,7 +836,6 @@ class DayTasksCanvas(QWidget):
         if hasattr(self.main, "_note_task_change"):
             self.main._note_task_change(task, before=before_state)
         self.main._last_paint_key = None
-        self._clear_blocks()
         self.main.reload_boards()
         self.main._sync_history_buttons()
 
@@ -639,11 +850,9 @@ class DayTasksCanvas(QWidget):
         exec_name = self.executor_at_global(global_pos)
         if exec_name:
             if not self.main.apply_executor_to_tasks([task_id], exec_name):
-                self._clear_blocks()
                 self.main.reload_boards()
             return
-        # не попали — убрать «призрак» и пересобрать
-        self._clear_blocks()
+        # не попали — вернуть карточку на место
         self.main.reload_boards()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -678,15 +887,20 @@ class DayTasksCanvas(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._apply_side_margins()
-        if not self.isVisible() or self._day_relayouting:
+        if not self.isVisible() or self._day_relayouting or self._in_rebuild:
             return
         avail_h = max(200, self.day_scroll.viewport().height() - 8)
         avail_w = max(COL_W, self.day_scroll.viewport().width() - 8)
         col_count = max(1, avail_w // (COL_W + COL_GAP))
-        pack = (col_count, avail_h)
-        if pack != self._last_day_pack:
-            self._day_relayouting = True
-            try:
-                self.rebuild()
-            finally:
-                self._day_relayouting = False
+        prev = self._last_day_pack
+        if prev is not None and col_count == prev[0]:
+            if avail_h != prev[1]:
+                for column in self._day_column_widgets:
+                    column.setMinimumHeight(avail_h)
+                self._last_day_pack = (col_count, avail_h)
+            return
+        self._day_relayouting = True
+        try:
+            self.rebuild()
+        finally:
+            self._day_relayouting = False

@@ -66,9 +66,8 @@ def reconcile_links(tasks: list[Task]) -> bool:
     return changed
 
 
-def linked_task_title(tasks: list[Task], task: Task) -> str:
+def _linked_title(by_id: dict[str, Task], task: Task) -> str:
     """Имена задач, связанных с этой. У корня — имена следующих узлов."""
-    by_id = {item.id: item for item in tasks}
     names: list[str] = []
     for tid in task.after_ids:
         child = by_id.get(tid)
@@ -83,6 +82,22 @@ def linked_task_title(tasks: list[Task], task: Task) -> str:
     if parent is None:
         return ""
     return (parent.title or "").strip()
+
+
+def linked_title_map(tasks: list[Task]) -> dict[str, str]:
+    """Один проход по книге: id задачи → подпись связанной."""
+    by_id = {item.id: item for item in tasks}
+    out: dict[str, str] = {}
+    for item in tasks:
+        title = _linked_title(by_id, item)
+        if title:
+            out[item.id] = title
+    return out
+
+
+def linked_task_title(tasks: list[Task], task: Task) -> str:
+    """Имена задач, связанных с этой. У корня — имена следующих узлов."""
+    return _linked_title({item.id: item for item in tasks}, task)
 
 
 def subtree_tasks(tasks: list[Task], task_id: str, *, include_self: bool = True) -> list[Task]:

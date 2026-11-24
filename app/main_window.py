@@ -1924,20 +1924,12 @@ class MainWindow(QMainWindow):
         control_changed = prev_control is not None and prev_control != has_control
         self._day_has_inbox = has_inbox
         self._day_has_control = has_control
-        if side_changed:
-            self._controls_on_left = want_left
-            self._place_floating_controls()
-        elif self._is_day_screen():
-            self._place_floating_controls()
-        if self._is_day_screen():
-            self.day_board._apply_side_margins(want_left)
-            if side_changed or inbox_changed or control_changed:
-                QTimer.singleShot(0, self._deferred_day_rebuild)
-
-    def _deferred_day_rebuild(self) -> None:
         if not self._is_day_screen():
             return
-        self.day_board.rebuild(defer_inbox_hook=True)
+        if side_changed or inbox_changed or control_changed:
+            self._controls_on_left = want_left
+            self._place_floating_controls()
+            self.day_board._apply_side_margins(want_left)
 
     def _on_swipe(self, direction: int) -> None:
         idx = self.stack.currentIndex()

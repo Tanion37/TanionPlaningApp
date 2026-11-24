@@ -666,6 +666,7 @@ class TagBar(QWidget):
         self._layout.setContentsMargins(8, 6, 8, 6)
         self._layout.setSpacing(6)
         self.circles: dict[str, TagCircle] = {}
+        self._circle_stamp: tuple[tuple[str, str], ...] = ()
         self._scroll.setWidget(self._inner)
         outer.addWidget(self._scroll)
         self.rebuild_circles()
@@ -673,19 +674,24 @@ class TagBar(QWidget):
     def rebuild_circles(self) -> None:
         from .tag_order import ordered_tag_defs
 
+        tags = ordered_tag_defs(for_bar=True)
+        stamp = tuple((tag.key, tag.symbol) for tag in tags)
+        if stamp == self._circle_stamp and self.circles:
+            return
         while self._layout.count():
             item = self._layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
         self.circles.clear()
-        for tag in ordered_tag_defs(for_bar=True):
+        for tag in tags:
             circle = TagCircle(tag.key, tag.symbol, self._inner, draggable=True)
             circle.clicked.connect(self.tag_clicked.emit)
             circle.tag_swapped.connect(self._on_swap)
             self.circles[tag.key] = circle
             self._layout.addWidget(circle)
         self._layout.addStretch(1)
+        self._circle_stamp = stamp
 
     def _on_swap(self) -> None:
         self.rebuild_circles()
