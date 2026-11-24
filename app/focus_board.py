@@ -1,11 +1,21 @@
-"""Экран «Фокус»: тот же разбор, что утром, с крупной карточкой и кругом «Позже»."""
+"""Экран «Фокус»: крупная карточка и круг Горит, Нужно, Можно, Контроль."""
 
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QHBoxLayout, QWidget
 
-from .focus import ACTION_LATER, focus_queue, load_font_pt, next_index, save_font_pt
+from .day_tasks import SECTION_GORIT
+from .focus import (
+    ACTION_LATER,
+    ACTION_TO_GORIT,
+    first_gorit_index,
+    focus_queue,
+    focus_section,
+    load_font_pt,
+    next_index,
+    save_font_pt,
+)
 from .morning_review import button_font_pt, clamp_font_pt
 from .morning_review_board import MorningReviewCanvas
 from .models import Task
@@ -26,8 +36,13 @@ class FocusCanvas(MorningReviewCanvas):
         self._bottom_layout.setContentsMargins(0, 0, 0, 0)
         self._bottom_layout.addWidget(self.btn_done)
         self.btn_later = self._make_action(ACTION_LATER, "ПОЗЖЕ")
-        self.btn_later.setToolTip("Показать следующую свою невыполненную задачу. Круг возвращается к первой.")
+        self.btn_later.setToolTip(
+            "Следующая задача круга: Горит, Нужно, Можно, Контроль, затем снова Горит."
+        )
         self._bottom_layout.addWidget(self.btn_later)
+        self.btn_to_gorit = self._make_action(ACTION_TO_GORIT, "ВЕРНУТЬСЯ К ГОРИТ")
+        self.btn_to_gorit.setToolTip("Показать первую задачу раздела «Горит». Теги задачи не меняются.")
+        self._bottom_layout.addWidget(self.btn_to_gorit)
         self.grid.addWidget(
             bottom,
             2,
@@ -74,9 +89,21 @@ class FocusCanvas(MorningReviewCanvas):
         self._pinned_id = ids[self._cursor] if ids else None
         self.rebuild()
 
+    def jump_to_gorit(self) -> None:
+        items = self._queue()
+        index = first_gorit_index(items)
+        if index is None:
+            return
+        self._cursor = index
+        self._pinned_id = items[index].id
+        self.rebuild()
+
     def _on_action(self, action: str) -> None:
         if action == ACTION_LATER:
             self.defer_current()
+            return
+        if action == ACTION_TO_GORIT:
+            self.jump_to_gorit()
             return
         if hasattr(self.main, "apply_focus_action"):
             self.main.apply_focus_action(action)
@@ -91,6 +118,8 @@ class FocusCanvas(MorningReviewCanvas):
         else:
             self._cursor = self._cursor % len(items)
             self._pinned_id = items[self._cursor].id
+        has_gorit = any(focus_section(task) == SECTION_GORIT for task in items)
+        self.btn_to_gorit.setEnabled(has_gorit)
         super().rebuild()
 
     def _current_task(self) -> Task | None:

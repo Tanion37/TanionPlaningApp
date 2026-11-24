@@ -1,15 +1,26 @@
-"""Очередь экрана «Фокус»: невыполненные задачи по кругу."""
+"""Очередь экрана «Фокус»: Горит, Нужно, Можно, Контроль и снова Горит."""
 
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Iterable
 
+from .day_tasks import SECTION_GORIT, SECTION_MOZHNO, SECTION_NUZHNO
 from .executors_store import is_own_executor, normalize_executor_name
 from .models import Task
 from .morning_review import DEFAULT_FONT_PT, clamp_font_pt
 
 ACTION_LATER = "later"
+ACTION_TO_GORIT = "to_gorit"
+SECTION_CONTROL = "Контроль"
+
+_SECTION_RANK = {
+    SECTION_GORIT: 0,
+    SECTION_NUZHNO: 1,
+    SECTION_MOZHNO: 2,
+    SECTION_CONTROL: 3,
+}
 
 # Почта входа → исполнитель, чьи задачи крутит «Фокус». Остальные экраны это не используют.
 FOCUS_EMAIL_EXECUTOR: dict[str, str] = {
@@ -56,29 +67,56 @@ def save_font_pt(pt: int) -> None:
     )
 
 
-def _group(task: Task) -> int:
-    """0 — горящие, 1 — актуальные, 2 — остальные невыполненные."""
+def focus_section(task: Task, today: date | None = None) -> str | None:
+    """Раздел круга. Пусто — задача в круг не входит.
+
+    Горит — важная и срочная. Тег «контроль» этот раздел не меняет.
+    Прочий контроль идёт после Можно. Нужно и Можно — актуальные задачи
+    без контроля и без входящей.
+    """
+    if task.deleted or task.is_done() or task.is_cancelled() or task.is_inbox():
+        return None
     if task.is_important() and task.is_urgent():
-        return 0
-    if task.is_actual():
-        return 1
-    return 2
+        return SECTION_GORIT
+    today = today or date.today()
+    if task.is_control():
+        if task.start_at is not None and task.start_at > today:
+            return None
+        return SECTION_CONTROL
+    if not task.is_actual():
+        return None
+    if task.is_important():
+        return SECTION_NUZHNO
+    return SECTION_MOZHNO
 
 
-def focus_queue(tasks: Iterable[Task], *, executor: str | None) -> list[Task]:
-    """Невыполненные задачи этого исполнителя: горящие, затем актуальные, затем остальные."""
+def focus_queue(tasks: Iterable[Task], *, executor: str | None, today: date | None = None) -> list[Task]:
+    """Задачи этого исполнителя: Горит, Нужно, Можно, Контроль."""
     if not executor:
         return []
+    today = today or date.today()
     items = [
         task
         for task in tasks
-        if not task.deleted
-        and not task.is_done()
-        and not task.is_cancelled()
-        and _belongs_to_executor(task, executor)
+        if _belongs_to_executor(task, executor) and focus_section(task, today) is not None
     ]
-    items.sort(key=lambda task: (_group(task), (task.title or "").casefold(), task.id))
+    items.sort(
+        key=lambda task: (
+            _SECTION_RANK[focus_section(task, today)],
+            (task.title or "").casefold(),
+            task.id,
+        )
+    )
     return items
+
+
+def first_gorit_index(tasks: Iterable[Task], today: date | None = None) -> int | None:
+    """Позиция первой задачи раздела Горит. Пусто, если таких нет."""
+    today = today or date.today()
+    for index, task in enumerate(tasks):
+        if focus_section(task, today) == SECTION_GORIT:
+            return index
+    return None
 
 
 def next_index(ids: list[str], current_id: str | None) -> int:
