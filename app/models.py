@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 
@@ -66,6 +66,8 @@ class Task:
     dirty: int = 0  # 1 — локальная правка ещё не ушла в облако
     deleted: int = 0  # 1 — строка снята, но остаётся в файле для синхронизации
     conflict: int = 0
+    edited_at: datetime | None = None  # UTC, когда локальные поля изменились
+
 
     def has_tag(self, key: str) -> bool:
         return key in self.tags
@@ -148,3 +150,9 @@ class Task:
 
     def is_fast(self) -> bool:
         return self.has_tag("быстрая")
+
+
+def note_local_edit(task: Task) -> None:
+    """Локальная правка: её надо отправить, время нужно для сверки с облаком."""
+    task.dirty = 1
+    task.edited_at = datetime.now(timezone.utc)

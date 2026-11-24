@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
-from .models import Task, format_date, parse_date
+from .models import Task, format_date, note_local_edit, parse_date
 from .tags import tags_to_cell
 from .xlsx_store import STORE_LOCK, TaskStore, _fill_prev_uuids, _next_id, _sync_fingerprint
 
@@ -146,7 +146,7 @@ def apply_remote(task: Task, remote: dict, role_names: dict[str, str], tasks: li
 
     if is_forgotten_project(task.project):
         task.project = ""
-        task.dirty = 1
+        note_local_edit(task)
     if task.prev_uuid:
         parent = next((item for item in tasks if item.cloud_uuid == task.prev_uuid), None)
         if parent is not None:
@@ -168,6 +168,58 @@ def _set_last_pulled_at(value: str) -> None:
         json.dumps({"last_pulled_at": value}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+
+_DATE_KEYS = {"issued_on", "completed_on", "start_on", "due_on", "remind_on"}
+
+
+def _parse_utc(value) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _field_text(key: str, value) -> str:
+    if value is None or value == "":
+        return ""
+    if key in _DATE_KEYS:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value).strip()[:10]
+    if key == "deleted":
+        return "1" if value in (True, 1, "1", "true", "True") else "0"
+    if key == "remind_time" and hasattr(value, "hour"):
+        return f"{int(value.hour):02d}:{int(value.minute):02d}"
+    if key == "remind_time":
+        return str(value).strip()[:5]
+    return str(value).strip()
+
+
+def _remote_matches_sent(remote: dict, sent: dict) -> bool:
+    """Облачная строка совпадает с тем, что только что отправили."""
+    return all(_field_text(key, remote.get(key)) == _field_text(key, value) for key, value in sent.items())
+
+
+def _cloud_is_later(remote: dict, task: Task) -> bool:
+    """Правка в Supabase новее локальной. Без локальной метки окно не открывать."""
+    remote_at = _parse_utc(remote.get("updated_at"))
+    local_at = task.edited_at if isinstance(task.edited_at, datetime) else _parse_utc(task.edited_at)
+    if remote_at is None or local_at is None:
+        return False
+    return remote_at > local_at
 
 
 def _as_version(value) -> int | None:
@@ -198,6 +250,39 @@ def _remote_version(cloud_uuid: str) -> int | None:
     if not rows:
         return None
     return _as_version(rows[0].get("version"))
+
+
+def _read_remote(cloud_uuid: str) -> dict | None:
+    from .supa import supabase
+
+    try:
+        rows = (
+            supabase.table("tasks").select("*").eq("id", cloud_uuid).limit(1).execute().data or []
+        )
+    except Exception:
+        log.warning("не удалось прочитать задачу %s", cloud_uuid, exc_info=True)
+        return None
+    return rows[0] if rows else None
+
+
+def _settle_remote(
+    task: Task,
+    remote: dict,
+    sent: dict,
+    role_names: dict[str, str],
+    tasks: list[Task],
+) -> str:
+    """ours — это наша запись. conflict — облако новее. keep — локальная новее, версию забрать."""
+    if _remote_matches_sent(remote, sent):
+        apply_remote(task, remote, role_names, tasks)
+        return "ours"
+    if _cloud_is_later(remote, task):
+        task.conflict = 1
+        return "conflict"
+    task.cloud_version = _as_version(remote.get("version")) or task.cloud_version
+    task.conflict = 0
+    task.dirty = 1
+    return "keep"
 
 
 def _keep_local_edit(task: Task, remote_row: dict | None) -> None:
@@ -250,16 +335,32 @@ def _push(
                     .execute()
                 )
                 if not res.data:
-                    # Пустой ответ — это не всегда чужая правка. Конфликт только если
-                    # version в облаке уже другая. Иначе окно будет открываться снова.
-                    current = _remote_version(task.cloud_uuid)
-                    if current is not None and current != _as_version(task.cloud_version):
-                        if _sync_fingerprint(task) != sent:
-                            task.dirty = 1
-                        else:
-                            task.conflict = 1
+                    # Фильтр по version отсекает ответ: триггер уже увеличил номер.
+                    # Пустой ответ — наша запись, если поля те же. Окно только когда
+                    # чужая правка в облаке новее локальной.
+                    remote = _read_remote(task.cloud_uuid)
+                    if remote is None:
+                        continue
+                    outcome = _settle_remote(task, remote, data, role_names, store.tasks)
+                    if outcome == "keep" and task.cloud_version:
+                        res = (
+                            supabase.table("tasks")
+                            .update(data)
+                            .eq("id", task.cloud_uuid)
+                            .eq("version", int(task.cloud_version))
+                            .execute()
+                        )
+                        if not res.data:
+                            remote = _read_remote(task.cloud_uuid)
+                            if remote is not None:
+                                outcome = _settle_remote(
+                                    task, remote, data, role_names, store.tasks
+                                )
+                            changed = True
+                            continue
+                    else:
                         changed = True
-                    continue
+                        continue
             if not res.data:
                 continue
             if _sync_fingerprint(task) != sent:
@@ -293,7 +394,12 @@ def _remote_rows(since: str | None) -> list[dict]:
     return rows
 
 
-def _pull(store: TaskStore, role_names: dict[str, str], stamps: dict[str, str]) -> bool:
+def _pull(
+    store: TaskStore,
+    role_ids: dict[str, str],
+    role_names: dict[str, str],
+    stamps: dict[str, str],
+) -> bool:
     from .xlsx_store import _load_id_map, _map_uuid
 
     has_live = any(not task.deleted for task in store.tasks)
@@ -336,7 +442,10 @@ def _pull(store: TaskStore, role_names: dict[str, str], stamps: dict[str, str]) 
             stamps[local.id] = _sync_fingerprint(local)
             changed = True
         elif local.dirty and _as_version(remote.get("version")) != _as_version(local.cloud_version):
-            local.conflict = 1
+            sent = to_remote(local, store.tasks, role_ids)
+            outcome = _settle_remote(local, remote, sent, role_names, store.tasks)
+            if outcome == "keep":
+                local.dirty = 1
             changed = True
         elif local.conflict:
             local.conflict = 0
@@ -372,7 +481,9 @@ def sync_store(store: TaskStore) -> tuple[bool, list[Task]]:
                     task.conflict = 0
                     changed = True
             changed = _push(store, role_ids, role_names, stamps) or changed
-            changed = _pull(store, role_names, stamps) or changed
+            changed = _pull(store, role_ids, role_names, stamps) or changed
+            if any(task.dirty and not task.conflict for task in store.tasks):
+                changed = _push(store, role_ids, role_names, stamps) or changed
         except Exception:
             log.warning("синхронизация пропущена", exc_info=True)
             return False, []
@@ -404,7 +515,7 @@ def keep_local(store: TaskStore, task: Task) -> None:
             except (TypeError, ValueError):
                 task.cloud_version = None
         task.conflict = 0
-        task.dirty = 1
+        note_local_edit(task)
         role_ids, role_names = _load_roles()
         stamps = {item.id: _sync_fingerprint(item) for item in list(store.tasks)}
         _push(store, role_ids, role_names, stamps)

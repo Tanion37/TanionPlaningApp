@@ -11,7 +11,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from .models import Task, format_date, parse_date
+from .models import Task, format_date, note_local_edit, parse_date
 from .projects import resolve_project_name, unify_project_casing
 from .xlsx_io import load_workbook_retry, save_workbook_atomic, xlsx_write_lock
 from .tags import (
@@ -81,6 +81,7 @@ COLUMNS: tuple[str, ...] = (
     "dirty",
     "deleted",
     "conflict",
+    "edited_at",
 )
 
 HEADER_ALIASES: dict[str, str] = {
@@ -140,6 +141,7 @@ HEADER_ALIASES: dict[str, str] = {
     "dirty": "dirty",
     "deleted": "deleted",
     "conflict": "conflict",
+    "edited_at": "edited_at",
 }
 
 
@@ -241,6 +243,23 @@ def _flag(value) -> int:
         return 1 if int(float(value)) else 0
     except (TypeError, ValueError):
         return 1 if str(value).strip().casefold() in {"1", "true", "да"} else 0
+
+
+def _parse_utc(value) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _version(value) -> int | None:
@@ -461,6 +480,7 @@ class TaskStore:
                     dirty=_flag(_cell(row, mapping, "dirty")),
                     deleted=_flag(_cell(row, mapping, "deleted")),
                     conflict=_flag(_cell(row, mapping, "conflict")),
+                    edited_at=_parse_utc(_cell(row, mapping, "edited_at")),
                 )
             )
         usage = collect_tag_usage(t.tags for t in tasks)
@@ -512,7 +532,7 @@ class TaskStore:
         """Новой задаче выдать uuid, любой правке поставить dirty."""
         if not (task.cloud_uuid or "").strip():
             task.cloud_uuid = str(uuid.uuid4())
-        task.dirty = 1
+        note_local_edit(task)
 
     def _remember_fingerprints(self) -> None:
         self._fingerprints = {task.id: _sync_fingerprint(task) for task in self.tasks}
@@ -567,6 +587,7 @@ class TaskStore:
             int(task.dirty or 0),
             int(task.deleted or 0),
             int(task.conflict or 0),
+            task.edited_at.isoformat() if task.edited_at else "",
         ]
 
     def save(self, *, track_edits: bool = True) -> None:
@@ -643,6 +664,8 @@ class TaskStore:
             dirty=1 if kwargs.get("dirty") is None else _flag(kwargs.get("dirty")),
             deleted=_flag(kwargs.get("deleted")),
             conflict=_flag(kwargs.get("conflict")),
+            edited_at=_parse_utc(kwargs.get("edited_at"))
+            or (datetime.now(timezone.utc) if kwargs.get("dirty", 1) else None),
         )
         from .period_roll import ensure_task_series
 

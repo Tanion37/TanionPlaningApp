@@ -170,8 +170,9 @@ def clear_forgotten_projects(tasks: list) -> bool:
         if not is_forgotten_project(getattr(task, "project", "")):
             continue
         task.project = ""
-        if hasattr(task, "dirty"):
-            task.dirty = 1
+        from .models import note_local_edit
+
+        note_local_edit(task)
         changed = True
     return changed
 
