@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+import logging
+import threading
 import uuid
 
-from PyQt6.QtCore import QPoint, QRect, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEventLoop, QObject, QPoint, QRect, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1092,6 +1094,59 @@ def _restart_supervised_bots() -> None:
     )
 
 
+log = logging.getLogger("tanion.main_window")
+
+
+class _BookWorker(QObject):
+    """Запись книги и обмен с Supabase вне потока окна."""
+
+    kick = pyqtSignal(bool, bool)
+    done = pyqtSignal(object)
+
+    def __init__(self, store) -> None:
+        super().__init__()
+        self.store = store
+
+    @pyqtSlot(bool, bool)
+    def run_job(self, do_save: bool, do_sync: bool) -> None:
+        result: dict = {"changed": False, "conflict_ids": [], "reauth": False, "error": ""}
+        try:
+            if do_save:
+                self.store.save()
+            if do_sync:
+                state = _cloud_session_state()
+                if state == "reauth":
+                    result["reauth"] = True
+                elif state == "ok":
+                    from .supabase_sync import sync_store
+
+                    changed, conflicts = sync_store(self.store)
+                    result["changed"] = bool(changed)
+                    result["conflict_ids"] = [
+                        task.id for task in conflicts if getattr(task, "conflict", 0)
+                    ]
+        except Exception as exc:
+            log.warning("фоновая запись не удалась", exc_info=True)
+            result["error"] = str(exc)
+        self.done.emit(result)
+
+
+def _cloud_session_state() -> str:
+    """ok — можно синхронизировать, reauth — нужен пароль, skip — сейчас не с чем."""
+    from .supa import has_live_session, refresh_saved_session, remembered
+
+    if not remembered():
+        return "ok" if has_live_session() else "skip"
+    state = refresh_saved_session()
+    if state == "rejected":
+        return "reauth"
+    if state == "offline" and not has_live_session():
+        return "skip"
+    if state not in ("ok", "offline"):
+        return "skip"
+    return "ok"
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -1393,6 +1448,22 @@ class MainWindow(QMainWindow):
         self._supabase_busy = False
         self._reauth_open = False
         self._reauth_dismissed = False
+        self._io_running = False
+        self._io_again = False
+        self._io_again_save = False
+        self._io_again_sync = False
+        self._quit_flush = False
+        self._own_xlsx_saves = 0
+        self._xlsx_flag_lock = threading.Lock()
+        self._io_thread = QThread(self)
+        self._book_worker = _BookWorker(self.store)
+        self._book_worker.moveToThread(self._io_thread)
+        self._book_worker.kick.connect(
+            self._book_worker.run_job,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._book_worker.done.connect(self._on_book_io_done)
+        self._io_thread.start()
         self._supabase_timer = QTimer(self)
         self._supabase_timer.setInterval(45 * 1000)
         self._supabase_timer.timeout.connect(self._supabase_sync)
@@ -1477,17 +1548,15 @@ class MainWindow(QMainWindow):
 
     def _install_xlsx_live_reload(self) -> None:
         """Подхватить запись бота в xlsx без перезапуска окна."""
-        self._own_xlsx_save = False
         self._xlsx_mtime = self._read_xlsx_mtime()
         orig_save = self.store.save
 
         def save_tracked(*args, **kwargs) -> None:
-            self._own_xlsx_save = True
+            self._begin_own_save()
             try:
                 orig_save(*args, **kwargs)
             finally:
-                self._xlsx_mtime = self._read_xlsx_mtime()
-                self._own_xlsx_save = False
+                self._end_own_save()
 
         self.store.save = save_tracked  # type: ignore[method-assign]
         self._xlsx_poll = QTimer(self)
@@ -1495,11 +1564,25 @@ class MainWindow(QMainWindow):
         self._xlsx_poll.timeout.connect(self._poll_xlsx_mtime)
         self._xlsx_poll.start()
 
-    def _poll_xlsx_mtime(self) -> None:
-        if self.demo_mode or self._own_xlsx_save:
-            return
+    def _begin_own_save(self) -> None:
+        with self._xlsx_flag_lock:
+            self._own_xlsx_saves += 1
+
+    def _end_own_save(self) -> None:
         mtime = self._read_xlsx_mtime()
-        if mtime <= self._xlsx_mtime:
+        with self._xlsx_flag_lock:
+            self._xlsx_mtime = mtime
+            self._own_xlsx_saves = max(0, self._own_xlsx_saves - 1)
+
+    def _poll_xlsx_mtime(self) -> None:
+        if self.demo_mode:
+            return
+        with self._xlsx_flag_lock:
+            if self._own_xlsx_saves:
+                return
+            seen = self._xlsx_mtime
+        mtime = self._read_xlsx_mtime()
+        if mtime <= seen:
             return
         self._xlsx_mtime = mtime
         self.store.load()
@@ -1523,13 +1606,100 @@ class MainWindow(QMainWindow):
     def _flush_save(self) -> None:
         if self.demo_mode or not self._save_pending:
             return
+        if self._io_running:
+            self._io_again = True
+            self._io_again_save = True
+            self._io_again_sync = self._sync_enabled
+            return
         self._save_pending = False
-        self.store.save()
-        self._schedule_supabase_sync()
+        self._start_book_io(save=True, sync=self._sync_enabled)
 
     def flush_save(self) -> None:
+        """Дождаться фоновой записи и дописать то, что кликнули после неё."""
         self._save_timer.stop()
-        self._flush_save()
+        if self.demo_mode:
+            return
+        self._quit_flush = True
+        try:
+            self._wait_book_io()
+            if self._save_pending or self._io_again_save:
+                self.store.save()
+                self._save_pending = False
+                self._io_again = False
+                self._io_again_save = False
+        finally:
+            self._quit_flush = False
+
+    def _wait_book_io(self) -> None:
+        if not self._io_running:
+            return
+        loop = QEventLoop()
+
+        def _stop(_result: object = None) -> None:
+            if loop.isRunning():
+                loop.quit()
+
+        self._book_worker.done.connect(_stop)
+        QTimer.singleShot(30000, _stop)
+        loop.exec()
+        try:
+            self._book_worker.done.disconnect(_stop)
+        except TypeError:
+            pass
+
+    def _start_book_io(self, *, save: bool, sync: bool) -> None:
+        if self.demo_mode:
+            return
+        if self._io_running:
+            self._io_again = True
+            self._io_again_save = self._io_again_save or save
+            self._io_again_sync = self._io_again_sync or sync
+            return
+        if not save and not sync:
+            return
+        self._io_running = True
+        self._book_worker.kick.emit(save, sync)
+
+    def _on_book_io_done(self, result: object) -> None:
+        self._io_running = False
+        if not isinstance(result, dict):
+            result = {}
+        if result.get("error"):
+            log.warning("фоновая запись: %s", result.get("error"))
+            self._save_pending = True
+            self._io_again = False
+            self._io_again_save = False
+            self._io_again_sync = False
+            if not self._quit_flush:
+                self._save_timer.start()
+            return
+        if self._quit_flush:
+            if self._io_again_save or result.get("error"):
+                self._save_pending = True
+            return
+        if result.get("reauth") and not self._reauth_dismissed:
+            self._prompt_reauth()
+        else:
+            ids = result.get("conflict_ids") or []
+            tasks = [
+                task
+                for task in self.store.tasks
+                if task.id in ids and task.conflict
+            ]
+            if tasks:
+                self._ask_supabase_conflicts(tasks)
+            if result.get("changed") or tasks:
+                self.reload_boards()
+        if self._io_running:
+            return
+        if self._io_again or self._save_pending:
+            save = self._io_again_save or self._save_pending
+            sync = self._io_again_sync or (self._save_pending and self._sync_enabled)
+            self._io_again = False
+            self._io_again_save = False
+            self._io_again_sync = False
+            self._save_pending = False
+            self._start_book_io(save=save, sync=sync)
 
     def _schedule_supabase_sync(self) -> None:
         if self.demo_mode or not self._sync_enabled:
@@ -1557,25 +1727,9 @@ class MainWindow(QMainWindow):
         self._supabase_sync()
 
     def _supabase_sync(self) -> None:
-        if self.demo_mode or not self._sync_enabled or getattr(self, "_supabase_busy", False):
+        if self.demo_mode or not self._sync_enabled:
             return
-        from .supa import has_live_session, refresh_saved_session, remembered
-
-        self._supabase_busy = True
-        try:
-            if remembered():
-                state = refresh_saved_session()
-                if state == "rejected":
-                    if not self._reauth_dismissed:
-                        self._prompt_reauth()
-                    return
-                if state == "offline" and not has_live_session():
-                    return
-                if state not in ("ok", "offline"):
-                    return
-            self._run_supabase_sync()
-        finally:
-            self._supabase_busy = False
+        self._start_book_io(save=False, sync=True)
 
     def _prompt_reauth(self) -> None:
         """Пароль поверх открытого окна. Отмена оставляет локальную работу."""
@@ -1603,13 +1757,7 @@ class MainWindow(QMainWindow):
             self._reauth_open = False
 
     def _run_supabase_sync(self) -> None:
-        from .supabase_sync import sync_store
-
-        changed, conflicts = sync_store(self.store)
-        if conflicts:
-            self._ask_supabase_conflicts(conflicts)
-        if changed or conflicts:
-            self.reload_boards()
+        self._start_book_io(save=False, sync=True)
 
     def _ask_supabase_conflicts(self, conflicts: list) -> None:
         from .supabase_sync import keep_local, take_remote
@@ -2768,7 +2916,7 @@ class MainWindow(QMainWindow):
         """Единственный источник задач для UI."""
         if self.demo_mode:
             return list(self.demo_tasks)
-        return [task for task in self.store.tasks if not task.deleted]
+        return [task for task in list(self.store.tasks) if not task.deleted]
 
     def _project_names(self) -> list[str]:
         from .projects import project_key
@@ -3598,6 +3746,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.flush_save()
+        thread = getattr(self, "_io_thread", None)
+        if thread is not None:
+            thread.quit()
+            thread.wait(2000)
         from .supa import discard_if_not_remembered
 
         discard_if_not_remembered()

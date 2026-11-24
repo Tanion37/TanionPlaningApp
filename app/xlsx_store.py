@@ -45,6 +45,8 @@ TZ = timezone(timedelta(hours=3))
 TASKS_SHEET = "tasks"
 # Один замок на процесс: интерфейс и синхронизация не пишут файл одновременно.
 STORE_LOCK = threading.RLock()
+# Вся запись книги целиком: снимок и замена файла не перемешиваются.
+SAVE_LOCK = threading.Lock()
 
 COLUMNS: tuple[str, ...] = (
     "id",
@@ -530,15 +532,63 @@ class TaskStore:
                 self.mark_changed(task)
                 self._fingerprints[task.id] = current
 
+    def _task_row(self, task: Task) -> list:
+        """Плоская строка для листа. Список тегов копируется, живая задача дальше меняется свободно."""
+        return [
+            task.id,
+            task.title,
+            format_date(task.created_at),
+            format_date(task.completed_at),
+            format_date(task.start_at),
+            format_date(task.due_at),
+            format_date(task.remind_at),
+            getattr(task, "remind_time", "") or "",
+            task.remind_period,
+            task.author,
+            getattr(task, "executor", "") or "",
+            task.project,
+            task.description,
+            tags_to_cell(list(task.tags or [])),
+            task.pos_x,
+            task.pos_y,
+            task.author_id,
+            task.chat_id,
+            task.source,
+            getattr(task, "series_id", "") or "",
+            getattr(task, "role", "") or "",
+            int(getattr(task, "after_count", 0) or 0),
+            _dump_after_ids(list(getattr(task, "after_ids", None) or [])),
+            getattr(task, "prev_id", "") or "",
+            getattr(task, "preset_name", "") or "",
+            int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1),
+            getattr(task, "cloud_uuid", "") or "",
+            getattr(task, "prev_uuid", "") or "",
+            "" if task.cloud_version is None else int(task.cloud_version),
+            int(task.dirty or 0),
+            int(task.deleted or 0),
+            int(task.conflict or 0),
+        ]
+
     def save(self, *, track_edits: bool = True) -> None:
         """Перезаписать лист tasks, сохранив остальные вкладки (lists, presets)."""
         from .tags_sheet import write_tags_sheet
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with STORE_LOCK:
+        with SAVE_LOCK:
             if track_edits:
                 self._mark_edited()
             _fill_prev_uuids(self.tasks)
+            rows: list = []
+            written: dict[str, str] = {}
+            for _attempt in range(2):
+                try:
+                    tasks = list(self.tasks)
+                    rows = [self._task_row(task) for task in tasks]
+                    written = {task.id: _sync_fingerprint(task) for task in tasks}
+                    break
+                except RuntimeError:
+                    if _attempt:
+                        raise
             with xlsx_write_lock(self.path):
                 if self.path.exists():
                     wb = load_workbook_retry(self.path)
@@ -550,45 +600,13 @@ class TaskStore:
                     ws = wb.active
                     ws.title = TASKS_SHEET
                 ws.append(list(COLUMNS))
-                for task in self.tasks:
-                    ws.append(
-                        [
-                            task.id,
-                            task.title,
-                            format_date(task.created_at),
-                            format_date(task.completed_at),
-                            format_date(task.start_at),
-                            format_date(task.due_at),
-                            format_date(task.remind_at),
-                            getattr(task, "remind_time", "") or "",
-                            task.remind_period,
-                            task.author,
-                            getattr(task, "executor", "") or "",
-                            task.project,
-                            task.description,
-                            tags_to_cell(task.tags),
-                            task.pos_x,
-                            task.pos_y,
-                            task.author_id,
-                            task.chat_id,
-                            task.source,
-                            getattr(task, "series_id", "") or "",
-                            getattr(task, "role", "") or "",
-                            int(getattr(task, "after_count", 0) or 0),
-                            _dump_after_ids(getattr(task, "after_ids", None) or []),
-                            getattr(task, "prev_id", "") or "",
-                            getattr(task, "preset_name", "") or "",
-                            int(getattr(task, "preset_step", -1) if getattr(task, "preset_step", -1) is not None else -1),
-                            getattr(task, "cloud_uuid", "") or "",
-                            getattr(task, "prev_uuid", "") or "",
-                            "" if task.cloud_version is None else int(task.cloud_version),
-                            int(task.dirty or 0),
-                            int(task.deleted or 0),
-                            int(task.conflict or 0),
-                        ]
-                    )
+                for row in rows:
+                    ws.append(row)
                 write_tags_sheet(wb)
                 save_workbook_atomic(wb, self.path)
+            for task in list(self.tasks):
+                if written.get(task.id) != _sync_fingerprint(task):
+                    self.mark_changed(task)
             self._remember_fingerprints()
 
     def add_task(self, title: str, *, persist: bool = True, **kwargs) -> Task:

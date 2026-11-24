@@ -9,7 +9,7 @@ from datetime import date, datetime
 
 from .models import Task, format_date, parse_date
 from .tags import tags_to_cell
-from .xlsx_store import STORE_LOCK, TaskStore, _fill_prev_uuids, _next_id
+from .xlsx_store import STORE_LOCK, TaskStore, _fill_prev_uuids, _next_id, _sync_fingerprint
 
 log = logging.getLogger("tanion.supabase_sync")
 
@@ -200,16 +200,32 @@ def _remote_version(cloud_uuid: str) -> int | None:
     return _as_version(rows[0].get("version"))
 
 
-def _push(store: TaskStore, role_ids: dict[str, str], role_names: dict[str, str]) -> bool:
+def _keep_local_edit(task: Task, remote_row: dict | None) -> None:
+    """Правка пришла, пока запрос был в сети: поля не затирать, version забрать."""
+    if remote_row:
+        task.cloud_version = _as_version(remote_row.get("version")) or task.cloud_version
+    task.dirty = 1
+
+
+def _push(
+    store: TaskStore,
+    role_ids: dict[str, str],
+    role_names: dict[str, str],
+    stamps: dict[str, str],
+) -> bool:
     from .supa import supabase
 
     changed = False
     for task in list(store.tasks):
         if not task.dirty or task.conflict:
             continue
+        if stamps.get(task.id) != _sync_fingerprint(task):
+            task.dirty = 1
+            stamps[task.id] = _sync_fingerprint(task)
         if not task.cloud_uuid:
             task.cloud_uuid = str(uuid.uuid4())
         data = to_remote(task, store.tasks, role_ids)
+        sent = _sync_fingerprint(task)
         try:
             if not task.cloud_version:
                 found = (
@@ -238,19 +254,27 @@ def _push(store: TaskStore, role_ids: dict[str, str], role_names: dict[str, str]
                     # version в облаке уже другая. Иначе окно будет открываться снова.
                     current = _remote_version(task.cloud_uuid)
                     if current is not None and current != _as_version(task.cloud_version):
-                        task.conflict = 1
+                        if _sync_fingerprint(task) != sent:
+                            task.dirty = 1
+                        else:
+                            task.conflict = 1
                         changed = True
                     continue
             if not res.data:
                 continue
+            if _sync_fingerprint(task) != sent:
+                _keep_local_edit(task, res.data[0])
+                changed = True
+                continue
             apply_remote(task, res.data[0], role_names, store.tasks)
+            stamps[task.id] = _sync_fingerprint(task)
             changed = True
         except Exception:
             log.warning("не удалось отправить задачу %s", task.id, exc_info=True)
     return changed
 
 
-def _pull(store: TaskStore, role_names: dict[str, str]) -> bool:
+def _pull(store: TaskStore, role_names: dict[str, str], stamps: dict[str, str]) -> bool:
     from .supa import supabase
     from .xlsx_store import _load_id_map, _map_uuid
 
@@ -289,6 +313,11 @@ def _pull(store: TaskStore, role_names: dict[str, str]) -> bool:
             store.tasks.append(local)
             by_uuid[cloud_id] = local
             apply_remote(local, remote, role_names, store.tasks)
+            stamps[local.id] = _sync_fingerprint(local)
+            changed = True
+        elif stamps.get(local.id) != _sync_fingerprint(local):
+            local.dirty = 1
+            stamps[local.id] = _sync_fingerprint(local)
             changed = True
         elif local.dirty and _as_version(remote.get("version")) != _as_version(local.cloud_version):
             local.conflict = 1
@@ -303,9 +332,9 @@ def _pull(store: TaskStore, role_names: dict[str, str]) -> bool:
             apply_remote(local, remote, role_names, store.tasks)
             changed = True
     if remote_rows:
-        stamps = [str(row.get("updated_at") or "") for row in remote_rows if row.get("updated_at")]
-        if stamps:
-            _set_last_pulled_at(max(stamps))
+        updated = [str(row.get("updated_at") or "") for row in remote_rows if row.get("updated_at")]
+        if updated:
+            _set_last_pulled_at(max(updated))
     return changed
 
 
@@ -320,13 +349,14 @@ def sync_store(store: TaskStore) -> tuple[bool, list[Task]]:
             _apply_id_map(store.tasks)
             _fill_prev_uuids(store.tasks)
             role_ids, role_names = _load_roles()
+            stamps = {task.id: _sync_fingerprint(task) for task in list(store.tasks)}
             changed = False
             for task in store.tasks:
                 if task.conflict:
                     task.conflict = 0
                     changed = True
-            changed = _push(store, role_ids, role_names) or changed
-            changed = _pull(store, role_names) or changed
+            changed = _push(store, role_ids, role_names, stamps) or changed
+            changed = _pull(store, role_names, stamps) or changed
         except Exception:
             log.warning("синхронизация пропущена", exc_info=True)
             return False, []
@@ -360,7 +390,8 @@ def keep_local(store: TaskStore, task: Task) -> None:
         task.conflict = 0
         task.dirty = 1
         role_ids, role_names = _load_roles()
-        _push(store, role_ids, role_names)
+        stamps = {item.id: _sync_fingerprint(item) for item in list(store.tasks)}
+        _push(store, role_ids, role_names, stamps)
         store.save(track_edits=False)
 
 
